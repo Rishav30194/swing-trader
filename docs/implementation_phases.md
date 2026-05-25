@@ -232,5 +232,5 @@ statistical edge re-validation.
 |--------------|----------------------------------------------------|
 | Phase 1 → 2  | Clean data for all symbols, no nulls, 1yr range     |
 | Phase 2 → 3  | Backtest Sharpe > 0.5, max drawdown < 25%          |
-| Phase 3 → 4  | ≥ 20 paper trades, Sharpe > 0.8, drawdown < 15%   |
+| Phase 3 → 4  | ≥ 20 paper trades, drawdown < 15%, zero crashes/2wk |
 | Scale-up     | Live results match paper results over 2 weeks      |
