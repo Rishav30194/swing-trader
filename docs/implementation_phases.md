@@ -183,20 +183,20 @@ statistical edge re-validation.
   - [x] 22 unit tests in `tests/test_executor.py` — all passing (mocked TradingClient)
 
 ### Main Loop
-- [ ] Write `main.py`
-  - [ ] Initialize APScheduler with market-hours check
-  - [ ] NYSE calendar check — skip on holidays and weekends
-  - [ ] Scan job (every 15 min, 9:45–15:45 EST):
-    - [ ] Fetch latest bars for all symbols
-    - [ ] Skip symbols already holding a position
-    - [ ] Compute indicators → evaluate signal
-    - [ ] If signal: send Telegram alert, wait for YES
-    - [ ] If YES: size position → place order → save to DB → confirm alert
-  - [ ] Monitor job (every 15 min, same window):
-    - [ ] Load all open positions from DB
-    - [ ] Fetch current price for each
-    - [ ] Update trailing stop
-    - [ ] Check exit conditions → execute exit if triggered
+- [x] Write `main.py`
+  - [x] Initialize APScheduler with market-hours check
+  - [x] NYSE calendar check — skip on holidays and weekends
+  - [x] Scan job (every 15 min, 9:45–15:45 EST):
+    - [x] Fetch latest bars for all symbols
+    - [x] Skip symbols already holding a position
+    - [x] Compute indicators → evaluate signal
+    - [x] If signal: send Telegram alert, wait for YES
+    - [x] If YES: size position → place order → save to DB → confirm alert
+  - [x] Monitor job (every 15 min, same window):
+    - [x] Load all open positions from DB
+    - [x] Fetch current price for each
+    - [x] Update trailing stop
+    - [x] Check exit conditions → execute exit if triggered
 
 ### Deployment
 - [ ] Test full loop locally in paper mode for 1 week

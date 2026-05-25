@@ -95,6 +95,9 @@ class Settings:
     # Hard cap: never hold more than this many open positions at once.
     max_open_positions: int
 
+    # Seconds to wait for a YES/NO reply before treating the signal as skipped.
+    reply_timeout_secs: int
+
     # --- Derived convenience properties ---
 
     @property
@@ -153,6 +156,7 @@ def _load_settings() -> Settings:
 
         risk_per_trade_pct=float(_get("RISK_PER_TRADE_PCT", "0.02")),
         max_open_positions=int(_get("MAX_OPEN_POSITIONS", "2")),
+        reply_timeout_secs=int(_get("REPLY_TIMEOUT_SECS", "300")),
     )
 
 
