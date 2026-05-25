@@ -174,12 +174,13 @@ statistical edge re-validation.
   - [x] 38 unit tests in `tests/test_notifier.py` — all passing (mocked Bot)
 
 ### Executor
-- [ ] Write `src/executor.py`
-  - [ ] `place_buy_order(symbol, shares)` — market order
-  - [ ] `place_sell_order(symbol, shares, reason)` — market order
-  - [ ] `get_account_equity()` — for position sizing
-  - [ ] Paper vs live switch via `config.ALPACA_PAPER`
-  - [ ] Log every order attempt and Alpaca response
+- [x] Write `src/executor.py`
+  - [x] `place_buy_order(symbol, shares)` — market order, polls until filled
+  - [x] `place_sell_order(symbol, shares, reason)` — market order, reason in returned dict
+  - [x] `get_account_equity()` — fetches live equity on every call, never cached
+  - [x] Paper vs live switch via `config.ALPACA_PAPER`; env var re-read on every order call
+  - [x] Log every order attempt and Alpaca response
+  - [x] 22 unit tests in `tests/test_executor.py` — all passing (mocked TradingClient)
 
 ### Main Loop
 - [ ] Write `main.py`
