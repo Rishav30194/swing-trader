@@ -21,15 +21,22 @@ the strategy code and validating edge on historical data before paper trading be
 
 ## Asset Universe
 
-| Symbol | Type          | Rationale                                               |
-|--------|---------------|---------------------------------------------------------|
-| NVDA   | Single stock  | High-volatility, high-liquidity. Strong swing candidate. |
-| ASML   | Single stock  | Semiconductor equipment. Lower correlation to NVDA.      |
-| VOO    | ETF           | S&P 500 tracker. Lower volatility, steady uptrends.     |
-| QQQM   | ETF           | Nasdaq-100. Tech-heavy, moderate volatility.            |
+| Symbol | Type          | Rationale                                                   |
+|--------|---------------|-------------------------------------------------------------|
+| NVDA   | Single stock  | High-volatility, high-liquidity. Strong swing candidate.    |
+| ASML   | Single stock  | Semiconductor equipment. Lower correlation to NVDA.         |
+| VOO    | ETF           | S&P 500 tracker. Lower volatility, steady uptrends.         |
+| QQQM   | ETF           | Nasdaq-100. Tech-heavy, moderate volatility.                |
+| MSFT   | Single stock  | Large-cap tech, strong trend structure, high liquidity.     |
+| AAPL   | Single stock  | Highest US market liquidity, reliable swing behavior.       |
+| AMD    | Single stock  | High-beta semiconductor, similar profile to NVDA.           |
+| META   | Single stock  | Strong trend structure, high liquidity.                     |
+| TSM    | Single stock  | Semiconductor equipment, non-US, lower NVDA correlation.    |
+| SPY    | ETF           | S&P 500 tracker, highest ETF liquidity.                     |
 
-Scanning is limited to these four symbols intentionally. Breadth is the enemy
-of a disciplined first system.
+Ten symbols provides ~12–15 signals/year, targeting the 30-trade Phase 3 gate
+in roughly 2–2.5 years of paper trading. Breadth is kept intentional — all ten
+are liquid, trending assets with clear technical structure.
 
 ---
 

@@ -126,7 +126,7 @@ def _load_settings() -> Settings:
 
     # Parse SYMBOLS: a comma-separated string like "NVDA,ASML,VOO,QQQM"
     # is split into ("NVDA", "ASML", "VOO", "QQQM").
-    symbols_raw = _get("SYMBOLS", "NVDA,ASML,VOO,QQQM")
+    symbols_raw = _get("SYMBOLS", "NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,META,TSM,SPY")
     symbols = tuple(s.strip().upper() for s in symbols_raw.split(",") if s.strip())
     if not symbols:
         raise ValueError("SYMBOLS env var is set but contains no valid ticker symbols.")

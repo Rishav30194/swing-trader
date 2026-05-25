@@ -25,9 +25,11 @@ Requirements:
 
 import argparse
 import logging
+import pickle
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -45,6 +47,39 @@ from src.risk import (
 )
 
 logging.basicConfig(level=logging.WARNING)
+
+_CACHE_DIR = Path(__file__).parent / "data" / "cache"
+
+
+# ---------------------------------------------------------------------------
+# Local data cache
+# ---------------------------------------------------------------------------
+
+def _get_cached(symbol: str, start: date) -> pd.DataFrame | None:
+    """Return cached DataFrame if it was written today and covers `start`. Otherwise None."""
+    path = _CACHE_DIR / f"{symbol}_daily.pkl"
+    if not path.exists():
+        return None
+    if datetime.fromtimestamp(path.stat().st_mtime).date() != date.today():
+        return None
+    try:
+        with open(path, "rb") as fh:
+            df = pickle.load(fh)
+    except Exception:
+        return None
+    if df["timestamp"].dt.date.min() > start:
+        return None  # cache doesn't reach back far enough for this run
+    return df
+
+
+def _save_cache(symbol: str, df: pd.DataFrame) -> None:
+    """Write DataFrame to disk cache. Failures are non-fatal."""
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_CACHE_DIR / f"{symbol}_daily.pkl", "wb") as fh:
+            pickle.dump(df, fh)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -83,25 +118,36 @@ class Trade:
 def load_data(symbols: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
     """
     Fetch and enrich data for each symbol.
-    Fetches extra bars before `start` so indicators are fully converged
-    by the first simulation date.
+
+    Checks a local disk cache first (data/cache/<SYMBOL>_daily.pkl). If the
+    cache was written today and covers the requested start date, it is used
+    directly — no API call. Otherwise data is fetched from Alpaca, indicators
+    are computed, and the result is saved to cache for subsequent runs today.
     """
     days_needed = (date.today() - start).days + 90  # 90-day indicator warm-up buffer
     loaded: dict[str, pd.DataFrame] = {}
 
     for symbol in symbols:
-        print(f"  Fetching {symbol}...", end=" ", flush=True)
-        try:
-            df = get_historical_bars(symbol, days=days_needed)
-            df = compute_indicators(df)
-            in_window = (
-                (df["timestamp"].dt.date >= start) &
-                (df["timestamp"].dt.date <= end)
-            ).sum()
-            loaded[symbol] = df
-            print(f"{in_window} trading days  ({start} → {end})")
-        except Exception as exc:
-            print(f"FAILED — {exc}")
+        cached = _get_cached(symbol, start)
+        if cached is not None:
+            print(f"  Loading {symbol} from cache...", end=" ", flush=True)
+            df = cached
+        else:
+            print(f"  Fetching {symbol}...", end=" ", flush=True)
+            try:
+                df = get_historical_bars(symbol, days=days_needed)
+                df = compute_indicators(df)
+                _save_cache(symbol, df)
+            except Exception as exc:
+                print(f"FAILED — {exc}")
+                continue
+
+        in_window = (
+            (df["timestamp"].dt.date >= start) &
+            (df["timestamp"].dt.date <= end)
+        ).sum()
+        loaded[symbol] = df
+        print(f"{in_window} trading days  ({start} → {end})")
 
     return loaded
 

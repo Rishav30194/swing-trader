@@ -103,6 +103,19 @@ validating the direction, not perfecting the system.
 
 ---
 
+## Pre-Phase 3 — Symbol Expansion & Data Cache
+**Goal:** Raise signal frequency to make the 30-trade Phase 3 gate reachable
+within ~2 years of paper trading, and add offline data caching to prevent
+rate-limiting during iterative backtesting.
+
+- [x] Add 6 symbols: MSFT, AAPL, AMD, META, TSM, SPY (total: 10 symbols)
+- [x] Update SYMBOLS default in `config.py` and `.env`
+- [x] Add local disk cache to `backtest.py` — `data/cache/<SYMBOL>_daily.pkl`,
+      invalidated daily; avoids redundant Alpaca calls on repeated runs
+- [x] Re-run full backtest (2022–2024) with 10-symbol universe — Sharpe 1.056, DD -4.90%, 31 trades → PASS
+
+---
+
 ## Phase 3 — Paper Trading Automation
 **Goal:** Run the full system end-to-end with real market timing, real Alpaca
 paper fills, and real Telegram notifications. Prove operational reliability.
