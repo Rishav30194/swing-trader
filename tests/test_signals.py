@@ -4,7 +4,7 @@ Unit tests for src/signals.py.
 All tests use synthetic DataFrames with hand-crafted indicator values.
 No network calls, no .env dependency.
 
-Default fixture: all four conditions pass. Each test group then isolates
+Default fixture: all three conditions pass. Each test group then isolates
 one condition to confirm it can independently block the signal.
 """
 
@@ -13,10 +13,8 @@ import pytest
 
 from src.signals import evaluate_buy_signal, SignalResult
 
-# Default thresholds matching the documented strategy
-_RSI_THRESH  = 45.0
-_EMA_PROX    = 0.02   # 2%
-_VOL_MULT    = 1.5
+_RSI_LOWER = 40.0
+_RSI_UPPER = 55.0
 
 
 # ---------------------------------------------------------------------------
@@ -25,52 +23,48 @@ _VOL_MULT    = 1.5
 
 def _make_df(
     *,
-    # Condition 1 — RSI
-    rsi: float = 40.0,           # < 45 → passes
-    # Condition 2 — EMA proximity
+    # Condition 1 — trend filter
     close: float = 100.0,
-    ema_21: float = 101.0,       # 1% away → passes
+    ema_50: float = 95.0,              # close > ema_50 → passes
+    # Condition 2 — RSI pullback range
+    rsi: float = 47.0,                 # 40 <= 47 < 55 → passes
     # Condition 3 — MACD crossover
     macd_curr: float = 0.5,
-    macd_signal_curr: float = 0.3,   # curr > signal → above
+    macd_signal_curr: float = 0.3,     # curr > signal → above
     macd_prev: float = -0.1,
-    macd_signal_prev: float = 0.0,   # prev <= signal → was below → crossover
-    # Condition 4 — volume spike
-    volume: float = 2_000_000.0,
-    vol_sma: float = 1_000_000.0,    # ratio = 2.0 → passes at 1.5x
+    macd_signal_prev: float = 0.0,     # prev <= signal → was below → crossover
     # Other required columns
     atr: float = 2.0,
 ) -> pd.DataFrame:
     """
     Build a 2-row DataFrame with explicit indicator values.
     Row 0 = previous bar, Row 1 = current bar.
-    By default all four buy-signal conditions are satisfied on the current bar.
+    By default all three buy-signal conditions are satisfied on the current bar.
     """
     dates = pd.date_range("2024-01-01", periods=2, freq="B", tz="UTC")
     return pd.DataFrame({
         "timestamp":   dates,
-        "open":        [close - 0.5, close - 0.5],
-        "high":        [close + 1.0, close + 1.0],
-        "low":         [close - 1.0, close - 1.0],
-        "close":       [close,       close],
-        "volume":      [volume,      volume],
-        "RSI_14":      [rsi,         rsi],
-        "EMA_21":      [ema_21,      ema_21],
-        "EMA_50":      [ema_21 * 0.98, ema_21 * 0.98],
-        "MACD":        [macd_prev,   macd_curr],
+        "open":        [close - 0.5,  close - 0.5],
+        "high":        [close + 1.0,  close + 1.0],
+        "low":         [close - 1.0,  close - 1.0],
+        "close":       [close,        close],
+        "volume":      [1_000_000,    1_000_000],
+        "RSI_14":      [rsi,          rsi],
+        "EMA_21":      [ema_50 * 1.02, ema_50 * 1.02],
+        "EMA_50":      [ema_50,        ema_50],
+        "MACD":        [macd_prev,    macd_curr],
         "MACD_signal": [macd_signal_prev, macd_signal_curr],
         "MACD_hist":   [macd_prev - macd_signal_prev, macd_curr - macd_signal_curr],
-        "VOL_SMA_20":  [vol_sma,     vol_sma],
-        "ATR_14":      [atr,         atr],
+        "VOL_SMA_20":  [1_000_000,    1_000_000],
+        "ATR_14":      [atr,          atr],
     })
 
 
 def _call(df: pd.DataFrame) -> SignalResult:
     return evaluate_buy_signal(
         df,
-        rsi_threshold=_RSI_THRESH,
-        ema_proximity_pct=_EMA_PROX,
-        volume_spike_multiplier=_VOL_MULT,
+        rsi_lower_bound=_RSI_LOWER,
+        rsi_upper_bound=_RSI_UPPER,
     )
 
 
@@ -89,54 +83,61 @@ def test_returns_signal_result_type():
 
 
 # ---------------------------------------------------------------------------
-# Condition 1 — RSI
+# Condition 1 — Trend filter (close > EMA_50)
 # ---------------------------------------------------------------------------
 
-def test_rsi_above_threshold_blocks_signal():
-    result = _call(_make_df(rsi=50.0))   # 50 >= 45
+def test_close_below_ema50_blocks_signal():
+    result = _call(_make_df(close=90.0, ema_50=95.0))
+    assert result.triggered is False
+    assert result.context["cond_trend"] is False
+
+
+def test_close_equal_to_ema50_blocks_signal():
+    # Condition is strictly greater-than; equal does not pass
+    result = _call(_make_df(close=95.0, ema_50=95.0))
+    assert result.triggered is False
+    assert result.context["cond_trend"] is False
+
+
+def test_close_just_above_ema50_passes():
+    result = _call(_make_df(close=95.01, ema_50=95.0))
+    assert result.context["cond_trend"] is True
+
+
+# ---------------------------------------------------------------------------
+# Condition 2 — RSI pullback range [rsi_lower_bound, rsi_upper_bound)
+# ---------------------------------------------------------------------------
+
+def test_rsi_below_lower_bound_blocks_signal():
+    # RSI < 40 → too oversold, potential larger problem
+    result = _call(_make_df(rsi=35.0))
     assert result.triggered is False
     assert result.context["cond_rsi"] is False
 
 
-def test_rsi_exactly_at_threshold_blocks_signal():
-    # Condition is strict less-than: RSI must be < threshold, not <=
-    result = _call(_make_df(rsi=45.0))
-    assert result.triggered is False
-    assert result.context["cond_rsi"] is False
-
-
-def test_rsi_just_below_threshold_passes():
-    result = _call(_make_df(rsi=44.9))
+def test_rsi_at_lower_bound_passes():
+    # RSI == 40 → exactly at lower bound, >= check passes
+    result = _call(_make_df(rsi=40.0))
     assert result.context["cond_rsi"] is True
 
 
-# ---------------------------------------------------------------------------
-# Condition 2 — EMA proximity
-# ---------------------------------------------------------------------------
+def test_rsi_in_middle_of_range_passes():
+    result = _call(_make_df(rsi=47.0))
+    assert result.context["cond_rsi"] is True
 
-def test_price_too_far_above_ema_blocks_signal():
-    # close=100, ema_21=96 → distance = 4/96 ≈ 4.2% > 2%
-    result = _call(_make_df(close=100.0, ema_21=96.0))
+
+def test_rsi_at_upper_bound_blocks_signal():
+    # RSI == 55 → strict less-than, does not pass
+    result = _call(_make_df(rsi=55.0))
     assert result.triggered is False
-    assert result.context["cond_ema"] is False
+    assert result.context["cond_rsi"] is False
 
 
-def test_price_too_far_below_ema_blocks_signal():
-    # close=100, ema_21=104 → distance = 4/104 ≈ 3.8% > 2%
-    result = _call(_make_df(close=100.0, ema_21=104.0))
+def test_rsi_above_upper_bound_blocks_signal():
+    # RSI > 55 → no real pullback has occurred
+    result = _call(_make_df(rsi=60.0))
     assert result.triggered is False
-    assert result.context["cond_ema"] is False
-
-
-def test_price_exactly_at_ema_passes():
-    result = _call(_make_df(close=100.0, ema_21=100.0))
-    assert result.context["cond_ema"] is True
-
-
-def test_price_at_boundary_passes():
-    # close=100, ema_21=98.04 → distance ≈ 2.0% (just within)
-    result = _call(_make_df(close=100.0, ema_21=98.04))
-    assert result.context["cond_ema"] is True
+    assert result.context["cond_rsi"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +147,8 @@ def test_price_at_boundary_passes():
 def test_macd_already_above_signal_no_crossover_blocks():
     # MACD was already above signal on the previous bar — not a new crossover
     result = _call(_make_df(
-        macd_prev=0.3, macd_signal_prev=0.1,   # prev: above
-        macd_curr=0.5, macd_signal_curr=0.3,   # curr: still above
+        macd_prev=0.3, macd_signal_prev=0.1,
+        macd_curr=0.5, macd_signal_curr=0.3,
     ))
     assert result.triggered is False
     assert result.context["cond_macd"] is False
@@ -173,7 +174,6 @@ def test_bearish_crossover_blocks_signal():
 
 
 def test_macd_crossover_exactly_at_zero_line_passes():
-    # Crossover from negative to positive exactly
     result = _call(_make_df(
         macd_prev=-0.01, macd_signal_prev=0.0,
         macd_curr=0.01,  macd_signal_curr=0.0,
@@ -182,34 +182,12 @@ def test_macd_crossover_exactly_at_zero_line_passes():
 
 
 def test_prev_macd_equal_to_signal_counts_as_crossover():
-    # prev: MACD == signal (<=), curr: MACD > signal → valid crossover
+    # prev: MACD == signal (satisfies <=), curr: MACD > signal → valid crossover
     result = _call(_make_df(
         macd_prev=0.2, macd_signal_prev=0.2,
         macd_curr=0.3, macd_signal_curr=0.2,
     ))
     assert result.context["cond_macd"] is True
-
-
-# ---------------------------------------------------------------------------
-# Condition 4 — Volume spike
-# ---------------------------------------------------------------------------
-
-def test_volume_below_multiplier_blocks_signal():
-    # volume = 1.4x SMA → below 1.5x threshold
-    result = _call(_make_df(volume=1_400_000.0, vol_sma=1_000_000.0))
-    assert result.triggered is False
-    assert result.context["cond_volume"] is False
-
-
-def test_volume_exactly_at_multiplier_passes():
-    # volume = exactly 1.5x SMA
-    result = _call(_make_df(volume=1_500_000.0, vol_sma=1_000_000.0))
-    assert result.context["cond_volume"] is True
-
-
-def test_volume_above_multiplier_passes():
-    result = _call(_make_df(volume=3_000_000.0, vol_sma=1_000_000.0))
-    assert result.context["cond_volume"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -219,28 +197,21 @@ def test_volume_above_multiplier_passes():
 def test_context_contains_all_expected_keys():
     result = _call(_make_df())
     expected_keys = {
-        "close", "ema_21", "ema_dist_pct", "ema_proximity_max_pct",
-        "rsi", "rsi_threshold",
+        "close", "ema_50",
+        "rsi", "rsi_lower_bound", "rsi_upper_bound",
         "macd", "macd_signal", "macd_prev", "macd_signal_prev",
-        "volume", "vol_sma_20", "volume_ratio", "volume_spike_min",
         "atr",
-        "cond_rsi", "cond_ema", "cond_macd", "cond_volume",
+        "cond_trend", "cond_rsi", "cond_macd",
     }
     assert expected_keys.issubset(set(result.context.keys()))
 
 
 def test_context_cond_flags_reflect_actual_state():
-    # Only RSI fails
-    result = _call(_make_df(rsi=50.0))
-    assert result.context["cond_rsi"]    is False
-    assert result.context["cond_ema"]    is True
-    assert result.context["cond_macd"]   is True
-    assert result.context["cond_volume"] is True
-
-
-def test_context_volume_ratio_is_correct():
-    result = _call(_make_df(volume=2_000_000.0, vol_sma=1_000_000.0))
-    assert result.context["volume_ratio"] == 2.0
+    # Only RSI fails (too high)
+    result = _call(_make_df(rsi=60.0))
+    assert result.context["cond_trend"] is True
+    assert result.context["cond_rsi"]   is False
+    assert result.context["cond_macd"]  is True
 
 
 def test_context_atr_is_populated():

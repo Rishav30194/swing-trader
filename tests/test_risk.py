@@ -167,44 +167,43 @@ def test_position_size_raises_on_zero_risk_pct():
 # ---------------------------------------------------------------------------
 
 def test_trailing_stop_does_not_activate_before_threshold():
-    # ATR=2, entry=100 → activation threshold = 102
-    # current_price=101 (< 102) → stop unchanged
+    # ATR=2, entry=100, activation=0.5 → threshold = 100 + 0.5×2 = 101
+    # current_price=100.5 < 101 → stop unchanged
     pos = _make_position(entry_price=100.0, trailing_stop=96.0)
-    new_stop = update_trailing_stop(pos, 101.0, 2.0, atr_stop_multiplier=_STOP_MULT)
+    new_stop = update_trailing_stop(pos, 100.5, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
     assert new_stop == 96.0
 
 
 def test_trailing_stop_does_not_activate_at_exact_threshold():
-    # current_price == entry + ATR → condition is strictly greater, so no activation
+    # current_price == entry + 0.5×ATR = 101 → condition is <=, so no activation
     pos = _make_position(entry_price=100.0, trailing_stop=96.0)
-    new_stop = update_trailing_stop(pos, 102.0, 2.0, atr_stop_multiplier=_STOP_MULT)
+    new_stop = update_trailing_stop(pos, 101.0, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
     assert new_stop == 96.0
 
 
 def test_trailing_stop_activates_above_threshold():
-    # current_price=103 > 102 → candidate = 103 − 4 = 99 > 96 → new stop = 99
+    # current_price=103 > threshold(101) → candidate = 103 − 4 = 99 > 96 → new stop = 99
     pos = _make_position(entry_price=100.0, trailing_stop=96.0)
-    new_stop = update_trailing_stop(pos, 103.0, 2.0, atr_stop_multiplier=_STOP_MULT)
+    new_stop = update_trailing_stop(pos, 103.0, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
     assert new_stop == pytest.approx(99.0)
 
 
 def test_trailing_stop_never_moves_down():
-    # price drops but is still above activation threshold
-    # candidate = 102.5 − 4 = 98.5 < current trailing_stop=99 → stays at 99
+    # price is above threshold(101) but candidate 98.5 < current trailing_stop=99 → stays at 99
     pos = _make_position(entry_price=100.0, trailing_stop=99.0)
-    new_stop = update_trailing_stop(pos, 102.5, 2.0, atr_stop_multiplier=_STOP_MULT)
+    new_stop = update_trailing_stop(pos, 102.5, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
     assert new_stop == pytest.approx(99.0)
 
 
 def test_trailing_stop_ratchets_up_with_rising_price():
     pos = _make_position(entry_price=100.0, trailing_stop=96.0)
-    # First tick up
-    stop1 = update_trailing_stop(pos, 105.0, 2.0, atr_stop_multiplier=_STOP_MULT)
-    assert stop1 == pytest.approx(101.0)   # 105 − 4
-    # Second tick up with improved trailing stop
+    # First tick up: 105 > threshold(101), candidate = 105 − 4 = 101
+    stop1 = update_trailing_stop(pos, 105.0, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
+    assert stop1 == pytest.approx(101.0)
+    # Second tick up: 108 > threshold, candidate = 108 − 4 = 104
     pos2 = _make_position(entry_price=100.0, trailing_stop=stop1)
-    stop2 = update_trailing_stop(pos2, 108.0, 2.0, atr_stop_multiplier=_STOP_MULT)
-    assert stop2 == pytest.approx(104.0)   # 108 − 4
+    stop2 = update_trailing_stop(pos2, 108.0, 2.0, atr_stop_multiplier=_STOP_MULT, atr_trailing_activation=0.5)
+    assert stop2 == pytest.approx(104.0)
     assert stop2 > stop1
 
 

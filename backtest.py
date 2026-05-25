@@ -157,6 +157,7 @@ def run_simulation(
                 pos.trailing_stop = update_trailing_stop(
                     pos, float(bar["close"]), float(bar["ATR_14"]),
                     atr_stop_multiplier=settings.atr_stop_multiplier,
+                    atr_trailing_activation=settings.atr_trailing_activation,
                 )
 
             reason = check_exit_conditions(pos, bar)
@@ -192,9 +193,8 @@ def run_simulation(
 
             signal = evaluate_buy_signal(
                 rows,
-                rsi_threshold=settings.rsi_threshold,
-                ema_proximity_pct=settings.ema_proximity_pct,
-                volume_spike_multiplier=settings.volume_spike_multiplier,
+                rsi_lower_bound=settings.rsi_lower_bound,
+                rsi_upper_bound=settings.rsi_upper_bound,
             )
             if not signal.triggered:
                 continue

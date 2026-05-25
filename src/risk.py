@@ -141,13 +141,14 @@ def update_trailing_stop(
     atr: float,
     *,
     atr_stop_multiplier: float,
+    atr_trailing_activation: float,
 ) -> float:
     """
     Ratchet the trailing stop upward if the trade has moved in our favor.
 
     Activation rule: the trailing stop only begins moving once price is
-    more than 1× ATR above entry. Before that, the hard stop provides
-    the only protection and the trailing stop remains unchanged.
+    more than atr_trailing_activation × ATR above entry. Before that, the
+    hard stop provides the only protection and the trailing stop stays put.
 
     Once active, the new trailing stop candidate is:
         candidate = current_price − (atr_stop_multiplier × ATR)
@@ -159,8 +160,8 @@ def update_trailing_stop(
         The new trailing stop level (may equal the current level if price
         has not moved enough to improve it).
     """
-    # Activation threshold: price must clear entry by at least 1 ATR
-    if current_price <= position.entry_price + atr:
+    # Activation threshold: price must clear entry by atr_trailing_activation × ATR
+    if current_price <= position.entry_price + atr_trailing_activation * atr:
         return position.trailing_stop
 
     candidate = current_price - (atr_stop_multiplier * atr)

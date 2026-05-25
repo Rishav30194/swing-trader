@@ -62,13 +62,13 @@ validating the direction, not perfecting the system.
   - [x] Unit test every indicator against known values (17 tests, all passing)
 
 ### Signal Logic
-- [ ] Update `src/signals.py` to three-condition AND gate (see `project_overview.md`)
-  - [ ] `evaluate_buy_signal(df)` — returns `SignalResult` dataclass
-  - [ ] Condition 1: close > EMA_50 (trend filter — uptrend only)
-  - [ ] Condition 2: RSI_LOWER_BOUND ≤ RSI(14) < RSI_UPPER_BOUND (mild pullback)
-  - [ ] Condition 3: MACD bullish crossover on this bar
-  - [ ] Populate `SignalResult.context` with all indicator values for alerts
-  - [ ] Update unit tests to match new three-condition gate
+- [x] Update `src/signals.py` to three-condition AND gate (see `project_overview.md`)
+  - [x] `evaluate_buy_signal(df)` — returns `SignalResult` dataclass
+  - [x] Condition 1: close > EMA_50 (trend filter — uptrend only)
+  - [x] Condition 2: RSI_LOWER_BOUND ≤ RSI(14) < RSI_UPPER_BOUND (mild pullback)
+  - [x] Condition 3: MACD bullish crossover on this bar
+  - [x] Populate `SignalResult.context` with all indicator values for alerts
+  - [x] Update unit tests to match new three-condition gate
 
   > **Strategy revised:** Original four-condition gate (RSI<45, price within 2% EMA_21,
   > MACD crossover, volume ≥ 1.5×) produced zero signals over 2022–2024. Two conditions
@@ -79,13 +79,13 @@ validating the direction, not perfecting the system.
   > for full rationale.
 
 ### Risk Module
-- [ ] Update `src/risk.py` exit parameters to match revised strategy
+- [x] Update `src/risk.py` exit parameters to match revised strategy
   - [x] `compute_exit_levels(entry_price, atr)` — returns SL, TP
   - [x] `compute_position_size(equity, risk_pct, entry, stop)` — returns shares
-  - [ ] `update_trailing_stop` — update activation from 1× ATR to 0.5× ATR
+  - [x] `update_trailing_stop` — activation updated to 0.5× ATR (was 1×)
   - [x] `check_exit_conditions(position, current_bar, entry_date)` — returns exit reason or None
   - [x] Unit tests for all edge cases (34 tests, all passing)
-  - [ ] Update ATR multipliers: SL = 1.5× (was 2×), TP = 2× (was 3×)
+  - [x] ATR multipliers: SL = 1.5× (was 2×), TP = 2× (was 3×) — via .env defaults
 
 ### Backtesting
 - [x] Write `backtest.py` — pandas walk-forward simulator using production modules
@@ -96,10 +96,10 @@ validating the direction, not perfecting the system.
   - Note: chose a direct pandas simulation over `backtrader` — duplicating
     strategy logic into a bt.Strategy class creates divergence risk between
     backtest and live code; this approach tests the exact production functions.
-- [ ] Run full backtest (2022–2024) with revised strategy — validate Phase 2 gate
-- [ ] Run bear-market run (2022 only) — trend filter should block most/all signals
-- [ ] Run bull-market run (2023–2024) — expect majority of signals here
-- [ ] **Do not use 2025 data for parameter tuning** — reserve it as out-of-sample
+- [x] Run full backtest (2022–2024) with revised strategy — Sharpe 1.043, DD -1.89% → PASS
+- [x] Run bear-market run (2022 only) — 2 trades, +0.55%, capital protected; EMA_50 blocked bear signals
+- [x] Run bull-market run (2023–2024) — 13 trades, 76.9% win rate, Sharpe 1.291 → PASS
+- [x] **Do not use 2025 data for parameter tuning** — reserved as out-of-sample
 
 ---
 
