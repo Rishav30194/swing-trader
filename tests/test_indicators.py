@@ -57,6 +57,9 @@ def test_returns_all_indicator_columns():
         "RSI_14", "EMA_21", "EMA_50",
         "MACD", "MACD_signal", "MACD_hist",
         "VOL_SMA_20", "ATR_14",
+        "ADX_14", "DMP_14", "DMN_14",
+        "STOCHk_14_3_3", "STOCHd_14_3_3",
+        "OBV",
     }
     assert expected_cols.issubset(set(out.columns))
 
@@ -226,6 +229,157 @@ def test_atr_higher_with_wider_candles():
     atr_narrow = compute_indicators(narrow)["ATR_14"].iloc[-1]
     atr_wide   = compute_indicators(wide)["ATR_14"].iloc[-1]
     assert atr_wide > atr_narrow
+
+
+# ---------------------------------------------------------------------------
+# ADX
+# ---------------------------------------------------------------------------
+
+def test_adx_range():
+    """ADX must always be in [0, 100] where defined."""
+    out = compute_indicators(_make_df(100))
+    valid = out["ADX_14"].dropna()
+    assert (valid >= 0).all() and (valid <= 100).all()
+
+
+def test_dmp_greater_than_dmn_in_uptrend():
+    """In a sustained uptrend, +DI (DMP) should exceed -DI (DMN)."""
+    n = 100
+    close = np.linspace(100, 200, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 1, "low": close - 1,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    assert out["DMP_14"].iloc[-1] > out["DMN_14"].iloc[-1]
+
+
+def test_dmn_greater_than_dmp_in_downtrend():
+    """In a sustained downtrend, -DI (DMN) should exceed +DI (DMP)."""
+    n = 100
+    close = np.linspace(200, 100, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 1, "low": close - 1,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    assert out["DMN_14"].iloc[-1] > out["DMP_14"].iloc[-1]
+
+
+def test_adx_higher_in_strong_trend_than_choppy():
+    """ADX should be higher after a clean trend than after sideways price action."""
+    n = 100
+    dates = pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC")
+
+    trending = np.linspace(100, 200, n)
+    choppy   = 100 + np.sin(np.linspace(0, 20 * np.pi, n)) * 5  # oscillates ±5
+
+    def _df(close):
+        return pd.DataFrame({
+            "timestamp": dates,
+            "open": close, "high": close + 1, "low": close - 1,
+            "close": close, "volume": np.full(n, 1_000_000.0),
+        })
+
+    adx_trend  = compute_indicators(_df(trending))["ADX_14"].iloc[-1]
+    adx_choppy = compute_indicators(_df(choppy))["ADX_14"].iloc[-1]
+    assert adx_trend > adx_choppy
+
+
+# ---------------------------------------------------------------------------
+# Stochastic
+# ---------------------------------------------------------------------------
+
+def test_stoch_range():
+    """Stochastic %K and %D must always be in [0, 100] where defined."""
+    out = compute_indicators(_make_df(100))
+    for col in ("STOCHk_14_3_3", "STOCHd_14_3_3"):
+        valid = out[col].dropna()
+        assert (valid >= 0).all() and (valid <= 100).all()
+
+
+def test_stoch_low_at_end_of_downtrend():
+    """After a sustained decline price is near the period low, so %K should be low."""
+    n = 100
+    close = np.linspace(200, 100, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 0.5, "low": close - 0.5,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    assert out["STOCHk_14_3_3"].iloc[-1] < 20
+
+
+def test_stoch_high_at_end_of_uptrend():
+    """After a sustained rise price is near the period high, so %K should be high."""
+    n = 100
+    close = np.linspace(100, 200, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 0.5, "low": close - 0.5,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    assert out["STOCHk_14_3_3"].iloc[-1] > 80
+
+
+def test_stochd_is_smoother_than_stochk():
+    """STOCHd (signal) should have lower variance than STOCHk (raw)."""
+    out = compute_indicators(_make_df(100))
+    k_std = out["STOCHk_14_3_3"].dropna().std()
+    d_std = out["STOCHd_14_3_3"].dropna().std()
+    assert d_std <= k_std
+
+
+# ---------------------------------------------------------------------------
+# OBV
+# ---------------------------------------------------------------------------
+
+def test_obv_increases_on_consecutive_up_days():
+    """Every day closes higher → volume is added → OBV is monotonically increasing."""
+    n = 100
+    close = np.linspace(100, 200, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 1, "low": close - 1,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    obv_diff = out["OBV"].diff().dropna()
+    assert (obv_diff > 0).all()
+
+
+def test_obv_decreases_on_consecutive_down_days():
+    """Every day closes lower → volume is subtracted → OBV is monotonically decreasing."""
+    n = 100
+    close = np.linspace(200, 100, n)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 1, "low": close - 1,
+        "close": close, "volume": np.full(n, 1_000_000.0),
+    })
+    out = compute_indicators(df)
+    obv_diff = out["OBV"].diff().dropna()
+    assert (obv_diff < 0).all()
+
+
+def test_obv_magnitude_reflects_volume():
+    """OBV change per bar should equal the bar's volume on a pure up day."""
+    n = 100
+    close = np.linspace(100, 200, n)
+    volume = np.full(n, 500_000.0)
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2023-01-01", periods=n, freq="B", tz="UTC"),
+        "open": close, "high": close + 1, "low": close - 1,
+        "close": close, "volume": volume,
+    })
+    out = compute_indicators(df)
+    # Every diff should equal exactly the per-bar volume (500_000)
+    obv_diff = out["OBV"].diff().dropna()
+    assert (obv_diff == 500_000.0).all()
 
 
 # ---------------------------------------------------------------------------

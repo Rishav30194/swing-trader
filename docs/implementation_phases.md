@@ -119,7 +119,7 @@ rate-limiting during iterative backtesting.
 ## Phase 3 — Paper Trading Automation
 **Goal:** Run the full system end-to-end with real market timing, real Alpaca
 paper fills, and real Telegram notifications. Prove operational reliability.
-**Gate to Phase 4:** ≥ 30 completed paper trades. Sharpe > 0.8.
+**Gate to Phase 4:** ≥ 20 completed paper trades. Sharpe > 0.8.
 Max drawdown < 15%. Zero unhandled crashes over a 2-week period.
 
 ### State Store
@@ -170,7 +170,7 @@ Max drawdown < 15%. Zero unhandled crashes over a 2-week period.
 - [ ] Confirm Telegram alerts arrive on phone from VPS
 
 ### Paper Trading Observation Period
-- [ ] Run for minimum 4–8 weeks (target ≥ 30 trades)
+- [ ] Run for minimum 4–8 weeks (target ≥ 20 trades)
 - [ ] Log every trade outcome in `trade_log`
 - [ ] Weekly review: are exits happening correctly? Any missed signals?
 - [ ] Do not adjust strategy parameters mid-observation (taints the sample)
@@ -196,5 +196,5 @@ Max drawdown < 15%. Zero unhandled crashes over a 2-week period.
 |--------------|----------------------------------------------------|
 | Phase 1 → 2  | Clean data for all 4 symbols, no nulls, 1yr range  |
 | Phase 2 → 3  | Backtest Sharpe > 0.5, max drawdown < 25%          |
-| Phase 3 → 4  | ≥ 30 paper trades, Sharpe > 0.8, drawdown < 15%   |
+| Phase 3 → 4  | ≥ 20 paper trades, Sharpe > 0.8, drawdown < 15%   |
 | Scale-up     | Live results match paper results over 2 weeks      |

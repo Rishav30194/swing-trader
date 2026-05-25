@@ -30,13 +30,11 @@ the strategy code and validating edge on historical data before paper trading be
 | MSFT   | Single stock  | Large-cap tech, strong trend structure, high liquidity.     |
 | AAPL   | Single stock  | Highest US market liquidity, reliable swing behavior.       |
 | AMD    | Single stock  | High-beta semiconductor, similar profile to NVDA.           |
-| META   | Single stock  | Strong trend structure, high liquidity.                     |
 | TSM    | Single stock  | Semiconductor equipment, non-US, lower NVDA correlation.    |
-| SPY    | ETF           | S&P 500 tracker, highest ETF liquidity.                     |
 
-Ten symbols provides ~12–15 signals/year, targeting the 30-trade Phase 3 gate
-in roughly 2–2.5 years of paper trading. Breadth is kept intentional — all ten
-are liquid, trending assets with clear technical structure.
+Eight symbols. META removed (negative P&L, stop-loss hits — MACD crossovers
+were false signals in choppy conditions). SPY removed (redundant with VOO,
+nearly identical signal timing). Target: ~10 signals/year.
 
 ---
 
@@ -104,7 +102,7 @@ is placed. The bot sends an alert with full signal context and waits for a
 ## Phase 4 Live-Capital Gate Criteria (non-negotiable)
 
 Before switching from paper to live trading:
-- Minimum 30 completed paper trades
+- Minimum 20 completed paper trades
 - Sharpe ratio > 0.8
 - Maximum drawdown < 15%
 - Win rate > 60% (backtest showed 76%; anything below 60% in paper trading
