@@ -199,13 +199,11 @@ def run_simulation(
 
             bar = today.iloc[0]
 
-            if not pd.isna(bar["ATR_14"]):
-                pos.trailing_stop = update_trailing_stop(
-                    pos, float(bar["close"]), float(bar["ATR_14"]),
-                    atr_stop_multiplier=settings.atr_stop_multiplier,
-                    atr_trailing_activation=settings.atr_trailing_activation,
-                )
-
+            # Check exits against the trailing stop as it stood at bar open,
+            # then update it using bar close for the next bar. Reversing this
+            # order would be look-ahead: the close occurs after the intraday
+            # low, so raising the stop with close before checking the low
+            # can trigger exits that never would have fired in reality.
             reason = check_exit_conditions(pos, bar)
             if reason:
                 trade.exit_date   = current_date
@@ -214,6 +212,12 @@ def run_simulation(
                 equity += trade.pnl_dollars
                 completed.append(trade)
             else:
+                if not pd.isna(bar["ATR_14"]):
+                    pos.trailing_stop = update_trailing_stop(
+                        pos, float(bar["close"]), float(bar["ATR_14"]),
+                        atr_stop_multiplier=settings.atr_stop_multiplier,
+                        atr_trailing_activation=settings.atr_trailing_activation,
+                    )
                 still_open.append((pos, trade))
 
         open_positions = still_open
