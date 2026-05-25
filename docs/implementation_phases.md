@@ -203,12 +203,13 @@ statistical edge re-validation.
 - [x] Provision VPS (Hetzner CPX11, Hillsboro OR, Ubuntu 24.04 — $7.59/mo)
 - [x] Set up `systemd` service for auto-restart (`swing-trader.service`, enabled)
 - [x] Configure `.env` on VPS (entered manually, never copied from local)
+- [x] Write `scripts/pull_db.sh` — checkpoint WAL + SCP trades.db to local for DB Browser review
 - [ ] Confirm Telegram alerts arrive on phone from VPS
 
 ### Paper Trading Observation Period
 - [ ] Run for minimum 4–8 weeks (target ≥ 20 trades)
 - [ ] Log every trade outcome in `trade_log`
-- [ ] Weekly review: are exits happening correctly? Any missed signals?
+- [ ] Weekly review: run `bash scripts/pull_db.sh` and review positions + trade_log in DB Browser
 - [ ] Do not adjust strategy parameters mid-observation (taints the sample)
 
 ---

@@ -82,7 +82,12 @@ swing-trader/
 │   ├── test_notifier.py    # Unit tests for Telegram formatting + send/listen (mocked)
 │   └── test_executor.py    # Unit tests for Alpaca order placement (mocked TradingClient)
 │
+├── scripts/
+│   ├── validate_data.py    # Phase 1 data validation script
+│   └── pull_db.sh          # Pull trades.db snapshot from VPS for local review
+│
 ├── logs/                   # Runtime logs (gitignored)
+├── trades.db               # Local DB snapshot pulled from VPS (gitignored)
 ├── main.py                 # Entry point — wires scheduler + modules
 ├── backtest.py             # Phase 2 standalone backtest runner
 ├── validate_oos.py         # OOS statistical validation (walk-forward, permutation, bootstrap)
@@ -211,6 +216,59 @@ ATR_TRAILING_ACTIVATION=0.5               # trailing stop activates after 0.5 ×
 RISK_PER_TRADE_PCT=0.02                   # 2% of account equity per trade
 MAX_OPEN_POSITIONS=2                       # never hold more than 2 at once
 REPLY_TIMEOUT_SECS=300                    # seconds to wait for YES/NO before skipping
+```
+
+---
+
+## VPS Operations
+
+**Server:** Hetzner CPX11 — Hillsboro, OR — `5.78.207.143` — Ubuntu 24.04
+**User:** `trader` | **Service:** `swing-trader.service` (systemd, auto-starts on reboot)
+
+### Common commands (run from your Mac)
+
+```bash
+# Stream live logs
+ssh trader@5.78.207.143 "journalctl -u swing-trader -f"
+
+# Check service status
+ssh trader@5.78.207.143 "systemctl status swing-trader"
+
+# Restart the service (e.g. after a config change)
+ssh trader@5.78.207.143 "sudo systemctl restart swing-trader"
+
+# Pull a fresh DB snapshot for review in DB Browser
+bash scripts/pull_db.sh
+```
+
+### Updating the code on the VPS
+
+Changes are NOT automatically deployed — push to GitHub, then manually update:
+
+```bash
+ssh trader@5.78.207.143 "cd ~/swing-trader && git pull && sudo systemctl restart swing-trader"
+```
+
+### Reviewing the database locally
+
+The live database lives on the VPS. Pull a snapshot with:
+
+```bash
+bash scripts/pull_db.sh
+```
+
+Then open `trades.db` in DB Browser for SQLite and hit **File → Revert** to reload.
+Useful queries:
+
+```sql
+-- All open positions
+SELECT * FROM positions WHERE status = 'open';
+
+-- Closed trades, most recent first
+SELECT * FROM positions WHERE status = 'closed' ORDER BY exit_date DESC;
+
+-- Full event log
+SELECT * FROM trade_log ORDER BY timestamp DESC LIMIT 100;
 ```
 
 ---
