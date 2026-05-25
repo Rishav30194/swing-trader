@@ -111,14 +111,17 @@ swing-trader/
 
 ### `signals.py`
 - Imports from `indicators.py`
-- Implements the four-condition AND gate
+- Implements the three-condition AND gate:
+  1. Close > EMA_50 (trend filter)
+  2. 40 ≤ RSI(14) < 55 (pullback in uptrend)
+  3. MACD bullish crossover on this bar
 - Returns a typed result: `SignalResult(triggered: bool, context: dict)`
 - The `context` dict carries all values for the Telegram alert message
 
 ### `risk.py`
-- Computes ATR-based stop-loss and take-profit levels
+- Computes ATR-based stop-loss (1.5× ATR) and take-profit (2× ATR) levels
 - Computes position size based on account equity and risk-per-trade %
-- Updates trailing stop: only moves up, never down
+- Updates trailing stop: only moves up, never down; activates at 0.5× ATR gain
 - Checks exit conditions: hard stop, trailing stop, TP, day-5 rule
 
 ### `notifier.py`
@@ -188,11 +191,11 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 
 # Strategy parameters (override defaults without touching code)
 SYMBOLS=NVDA,ASML,VOO,QQQM
-RSI_THRESHOLD=45
-EMA_PROXIMITY_PCT=0.02
-VOLUME_SPIKE_MULTIPLIER=1.5
-ATR_STOP_MULTIPLIER=2.0
-ATR_TP_MULTIPLIER=3.0
+RSI_LOWER_BOUND=40                         # RSI must be at or above this (no panic-sell entries)
+RSI_UPPER_BOUND=55                         # RSI must be below this (only buy actual dips)
+ATR_STOP_MULTIPLIER=1.5                    # hard stop = entry − (1.5 × ATR)
+ATR_TP_MULTIPLIER=2.0                      # take-profit = entry + (2 × ATR)
+ATR_TRAILING_ACTIVATION=0.5               # trailing stop activates after 0.5 × ATR gain
 RISK_PER_TRADE_PCT=0.02                   # 2% of account equity per trade
 MAX_OPEN_POSITIONS=2                       # never hold more than 2 at once
 ```

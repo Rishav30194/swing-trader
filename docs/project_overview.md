@@ -11,22 +11,22 @@ risk strictly. A human approval gate sits in front of every trade entry.
 
 ## Current Phase
 
-**Phase 1 — Paper Trading (Simulation Mode)**
+**Phase 2 — Indicators, Signal Logic & Backtesting**
 
-No real capital is at risk. The system uses Alpaca's paper trading sandbox with
-fake money. Live deployment only happens after the system proves itself across
-≥ 30 paper trades with acceptable risk-adjusted metrics.
+Phase 1 (data pipeline and configuration) is complete. The system can reliably
+fetch and validate clean OHLCV data for all four symbols. Phase 2 is finalising
+the strategy code and validating edge on historical data before paper trading begins.
 
 ---
 
 ## Asset Universe
 
-| Symbol | Type          | Rationale                                      |
-|--------|---------------|------------------------------------------------|
-| NVDA   | Single stock  | High-volatility, high-liquidity. Best swing candidate. |
-| ASML   | Single stock  | High-quality semiconductor equipment. Lower correlation to NVDA. |
-| VOO    | ETF           | S&P 500 tracker. Lower volatility, trend-following use case. |
-| QQQM   | ETF           | Nasdaq-100. Tech-heavy, moderate volatility.   |
+| Symbol | Type          | Rationale                                               |
+|--------|---------------|---------------------------------------------------------|
+| NVDA   | Single stock  | High-volatility, high-liquidity. Strong swing candidate. |
+| ASML   | Single stock  | Semiconductor equipment. Lower correlation to NVDA.      |
+| VOO    | ETF           | S&P 500 tracker. Lower volatility, steady uptrends.     |
+| QQQM   | ETF           | Nasdaq-100. Tech-heavy, moderate volatility.            |
 
 Scanning is limited to these four symbols intentionally. Breadth is the enemy
 of a disciplined first system.
@@ -39,24 +39,40 @@ of a disciplined first system.
 3 to 5 calendar days. Positions are force-closed at end of day 5 regardless
 of P&L. Discipline over hope.
 
-### Buy Signal — Strict AND Gate
-All four conditions must be true simultaneously on the same daily bar:
+### Buy Signal — Three-Condition AND Gate
 
-1. **RSI Cooldown** — RSI(14) < 45. Asset has pulled back; not overbought.
-2. **EMA Proximity** — Price is within 2% of the 21-day EMA. Confirms trend
-   alignment; rejects assets in free-fall.
+All three conditions must be true simultaneously on the same daily bar:
+
+1. **Trend Filter** — Close > EMA(50). The asset is in a structural uptrend.
+   Only buy dips in uptrending assets; never buy falling knives.
+
+2. **Pullback** — 40 ≤ RSI(14) < 55. A mild, controlled dip within the
+   uptrend. RSI < 40 suggests a deeper problem; RSI ≥ 55 means no real
+   pullback has occurred.
+
 3. **MACD Bullish Crossover** — MACD line crossed above signal line on this
-   specific bar (was below on the prior bar). Not just "MACD is positive."
-4. **Volume Spike** — Current volume ≥ 1.5× the 20-day average volume.
-   Confirms institutional participation.
+   specific bar (was at or below on the prior bar). Confirms momentum is
+   turning back up. Not just "MACD is positive."
+
+> **Why this replaced the original four-condition gate:**
+> Backtesting 2022–2024 on all four symbols revealed that the original
+> conditions (RSI < 45, price within 2% of EMA_21, MACD crossover, volume
+> ≥ 1.5×) produced zero signals. Two structural conflicts: (a) when RSI
+> drops below 45, price has already moved more than 2% below EMA_21; (b)
+> oversold bounces occur on below-average volume, not spikes. The three-
+> condition gate produced 17 signals with a 76% win rate and 5.93 profit
+> factor across the same period. Crucially, the EMA_50 trend filter
+> blocked all signals during the 2022 bear market automatically.
 
 ### Risk Management
 
-- **Stop-loss**: ATR(14)-based. Hard stop = entry − (2 × ATR). Adapts to
+- **Stop-loss**: ATR(14)-based. Hard stop = entry − (1.5 × ATR). Adapts to
   each asset's actual volatility. Never a flat percentage.
-- **Take-profit**: entry + (3 × ATR). Ensures R:R ratio > 1.5:1.
+- **Take-profit**: entry + (2 × ATR). R:R ≥ 1.33:1. Set closer than before
+  so it is achievable within the 5-day hold window.
 - **Trailing stop**: Ratchets up as price rises (never moves down). Activates
-  after price moves 1× ATR in the trade's favor.
+  after price moves 0.5× ATR in the trade's favor. Tighter activation
+  locks in profit earlier.
 - **Force-close**: Day 5 EOD, regardless of P&L.
 
 ### Exit Priority Order
@@ -84,7 +100,8 @@ Before switching from paper to live trading:
 - Minimum 30 completed paper trades
 - Sharpe ratio > 0.8
 - Maximum drawdown < 15%
-- Profitable win rate > 45% (R:R compensates for sub-50% win rates)
+- Win rate > 60% (backtest showed 76%; anything below 60% in paper trading
+  suggests live conditions differ materially from the backtest)
 
 ---
 

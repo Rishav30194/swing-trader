@@ -71,15 +71,11 @@ class Settings:
     symbols: tuple[str, ...]
 
     # --- Strategy thresholds ---
-    # RSI must be below this value for a buy signal (asset has pulled back).
-    rsi_threshold: float
+    # RSI must be at or above this value (no panic-sell entries).
+    rsi_lower_bound: float
 
-    # Price must be within this fraction of the 21-day EMA.
-    # 0.02 means "within 2%".
-    ema_proximity_pct: float
-
-    # Current volume must be at least this many times the 20-day average.
-    volume_spike_multiplier: float
+    # RSI must be strictly below this value (only buy actual dips, not breakouts).
+    rsi_upper_bound: float
 
     # --- ATR-based exit multipliers ---
     # Hard stop-loss = entry_price - (atr_stop_multiplier × ATR)
@@ -87,6 +83,9 @@ class Settings:
 
     # Take-profit    = entry_price + (atr_tp_multiplier × ATR)
     atr_tp_multiplier: float
+
+    # Trailing stop activates once price rises by this many ATRs above entry.
+    atr_trailing_activation: float
 
     # --- Position sizing ---
     # Fraction of account equity to risk on each trade.
@@ -145,12 +144,12 @@ def _load_settings() -> Settings:
 
         # Strategy thresholds — all have sensible defaults matching the spec,
         # but can be overridden in .env without touching this file.
-        rsi_threshold=float(_get("RSI_THRESHOLD", "45")),
-        ema_proximity_pct=float(_get("EMA_PROXIMITY_PCT", "0.02")),
-        volume_spike_multiplier=float(_get("VOLUME_SPIKE_MULTIPLIER", "1.5")),
+        rsi_lower_bound=float(_get("RSI_LOWER_BOUND", "40")),
+        rsi_upper_bound=float(_get("RSI_UPPER_BOUND", "55")),
 
-        atr_stop_multiplier=float(_get("ATR_STOP_MULTIPLIER", "2.0")),
-        atr_tp_multiplier=float(_get("ATR_TP_MULTIPLIER", "3.0")),
+        atr_stop_multiplier=float(_get("ATR_STOP_MULTIPLIER", "1.5")),
+        atr_tp_multiplier=float(_get("ATR_TP_MULTIPLIER", "2.0")),
+        atr_trailing_activation=float(_get("ATR_TRAILING_ACTIVATION", "0.5")),
 
         risk_per_trade_pct=float(_get("RISK_PER_TRADE_PCT", "0.02")),
         max_open_positions=int(_get("MAX_OPEN_POSITIONS", "2")),

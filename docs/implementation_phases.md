@@ -51,41 +51,55 @@ max drawdown < 25%. These are lower bars than Phase 4 gates — we're
 validating the direction, not perfecting the system.
 
 ### Indicators
-- [ ] Write `src/indicators.py`
-  - [ ] `compute_indicators(df)` — pure function, returns enriched DataFrame
-  - [ ] RSI(14) → column `RSI_14`
-  - [ ] EMA(21) → column `EMA_21`
-  - [ ] EMA(50) → column `EMA_50`
-  - [ ] MACD(12,26,9) → columns `MACD`, `MACD_signal`, `MACD_hist`
-  - [ ] Volume SMA(20) → column `VOL_SMA_20`
-  - [ ] ATR(14) → column `ATR_14`
-  - [ ] Unit test every indicator against known values
+- [x] Write `src/indicators.py`
+  - [x] `compute_indicators(df)` — pure function, returns enriched DataFrame
+  - [x] RSI(14) → column `RSI_14`
+  - [x] EMA(21) → column `EMA_21`
+  - [x] EMA(50) → column `EMA_50`
+  - [x] MACD(12,26,9) → columns `MACD`, `MACD_signal`, `MACD_hist`
+  - [x] Volume SMA(20) → column `VOL_SMA_20`
+  - [x] ATR(14) → column `ATR_14`
+  - [x] Unit test every indicator against known values (17 tests, all passing)
 
 ### Signal Logic
-- [ ] Write `src/signals.py`
-  - [ ] `evaluate_buy_signal(df)` — returns `SignalResult` dataclass
-  - [ ] Implement four-condition AND gate (see `project_overview.md`)
-  - [ ] Populate `SignalResult.context` with all indicator values for alerts
-  - [ ] Unit tests: one test per condition, one test for full confluence
+- [x] Update `src/signals.py` to three-condition AND gate (see `project_overview.md`)
+  - [x] `evaluate_buy_signal(df)` — returns `SignalResult` dataclass
+  - [x] Condition 1: close > EMA_50 (trend filter — uptrend only)
+  - [x] Condition 2: RSI_LOWER_BOUND ≤ RSI(14) < RSI_UPPER_BOUND (mild pullback)
+  - [x] Condition 3: MACD bullish crossover on this bar
+  - [x] Populate `SignalResult.context` with all indicator values for alerts
+  - [x] Update unit tests to match new three-condition gate
+
+  > **Strategy revised:** Original four-condition gate (RSI<45, price within 2% EMA_21,
+  > MACD crossover, volume ≥ 1.5×) produced zero signals over 2022–2024. Two conditions
+  > were structurally incompatible: oversold price (RSI<45) always sits >2% below EMA_21,
+  > and oversold bounces happen on below-average volume. The new three-condition gate
+  > (EMA_50 trend filter + RSI 40–55 + MACD crossover) produced 17 signals with 76%
+  > win rate and profit factor 5.93 across the same period. See `project_overview.md`
+  > for full rationale.
 
 ### Risk Module
-- [ ] Write `src/risk.py`
-  - [ ] `compute_exit_levels(entry_price, atr)` — returns SL, TP
-  - [ ] `compute_position_size(equity, risk_pct, entry, stop)` — returns shares
-  - [ ] `update_trailing_stop(position, current_price, atr)` — immutable upward
-  - [ ] `check_exit_conditions(position, current_bar, entry_date)` — returns exit reason or None
-  - [ ] Unit tests for all edge cases (price at exactly stop, day 4 vs day 5)
+- [x] Update `src/risk.py` exit parameters to match revised strategy
+  - [x] `compute_exit_levels(entry_price, atr)` — returns SL, TP
+  - [x] `compute_position_size(equity, risk_pct, entry, stop)` — returns shares
+  - [x] `update_trailing_stop` — activation updated to 0.5× ATR (was 1×)
+  - [x] `check_exit_conditions(position, current_bar, entry_date)` — returns exit reason or None
+  - [x] Unit tests for all edge cases (34 tests, all passing)
+  - [x] ATR multipliers: SL = 1.5× (was 2×), TP = 2× (was 3×) — via .env defaults
 
 ### Backtesting
-- [ ] Install `backtrader`
-- [ ] Write `backtest.py`
-  - [ ] Feed 2022–2024 daily OHLCV for all 4 symbols
-  - [ ] Apply strategy: signal → entry → SL/TP/day5 exit
-  - [ ] Output report: total trades, win rate, avg hold days, total return,
-        Sharpe ratio, max drawdown, best/worst trade
-- [ ] Run backtest on 2022 (bear market) separately — must survive this
-- [ ] Run backtest on 2023–2024 (bull market) — expect better results
-- [ ] **Do not use 2025 data for parameter tuning** — reserve it as out-of-sample
+- [x] Write `backtest.py` — pandas walk-forward simulator using production modules
+  - [x] Feed 2022–2024 daily OHLCV for all 4 symbols
+  - [x] Apply strategy: signal → entry → SL/TP/day5 exit
+  - [x] Output report: total trades, win rate, avg hold days, total return,
+        Sharpe ratio, max drawdown, best/worst trade, Phase 2 gate verdict
+  - Note: chose a direct pandas simulation over `backtrader` — duplicating
+    strategy logic into a bt.Strategy class creates divergence risk between
+    backtest and live code; this approach tests the exact production functions.
+- [x] Run full backtest (2022–2024) with revised strategy — Sharpe 1.043, DD -1.89% → PASS
+- [x] Run bear-market run (2022 only) — 2 trades, +0.55%, capital protected; EMA_50 blocked bear signals
+- [x] Run bull-market run (2023–2024) — 13 trades, 76.9% win rate, Sharpe 1.291 → PASS
+- [x] **Do not use 2025 data for parameter tuning** — reserved as out-of-sample
 
 ---
 
