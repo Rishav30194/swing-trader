@@ -165,12 +165,13 @@ statistical edge re-validation.
   - [x] 21 unit tests in `tests/test_database.py` — all passing (in-memory SQLite)
 
 ### Notification System
-- [ ] Write `src/notifier.py`
-  - [ ] `send_signal_alert(symbol, signal_context)` — buy signal message
-  - [ ] `send_execution_alert(symbol, order, position)` — filled notification
-  - [ ] `send_exit_alert(symbol, position, reason)` — exit notification
-  - [ ] `send_error_alert(error)` — crash/error notification
-  - [ ] `listen_for_reply(timeout_seconds)` — poll for YES/NO reply
+- [x] Write `src/notifier.py`
+  - [x] `send_signal_alert(symbol, signal_context)` — buy signal message
+  - [x] `send_execution_alert(symbol, order, position)` — filled notification
+  - [x] `send_exit_alert(symbol, position, reason, exit_price)` — exit notification with P&L
+  - [x] `send_error_alert(error)` — crash/error notification, never raises
+  - [x] `listen_for_reply(timeout_seconds)` — poll for YES/NO reply; drains queue before listening
+  - [x] 38 unit tests in `tests/test_notifier.py` — all passing (mocked Bot)
 
 ### Executor
 - [ ] Write `src/executor.py`
