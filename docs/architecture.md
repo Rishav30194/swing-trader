@@ -41,8 +41,8 @@
 ┌────────────────────▼────────────────────────────────┐
 │              Execution Layer                        │
 │  executor.py — Alpaca order placement               │
-│  Paper env (Phase 1) ↔ Live env (Phase 4)           │
-│  Switched via ALPACA_BASE_URL env var only          │
+│  Paper env (Phase 3) ↔ Live env (Phase 4)           │
+│  Switched via ALPACA_PAPER env var only             │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
@@ -78,7 +78,9 @@ swing-trader/
 │   ├── test_indicators.py  # Unit tests for indicator math
 │   ├── test_signals.py     # Unit tests for signal logic
 │   ├── test_risk.py        # Unit tests for SL/TP calculations
-│   └── test_database.py    # Unit tests for SQLite state store (in-memory)
+│   ├── test_database.py    # Unit tests for SQLite state store (in-memory)
+│   ├── test_notifier.py    # Unit tests for Telegram formatting + send/listen (mocked)
+│   └── test_executor.py    # Unit tests for Alpaca order placement (mocked TradingClient)
 │
 ├── logs/                   # Runtime logs (gitignored)
 ├── main.py                 # Entry point — wires scheduler + modules
@@ -140,10 +142,10 @@ swing-trader/
 - Telegram's async API wrapped with `asyncio.run()` — rest of codebase stays synchronous
 
 ### `executor.py`
-- Places market and limit orders via Alpaca SDK
-- Reads `ALPACA_PAPER` env var to target paper vs live environment
-- Logs every order attempt and response to SQLite and log file
-- Never called directly — always invoked through the human gate flow
+- Places market orders via Alpaca SDK (buy entries and all exit types)
+- Reads `ALPACA_PAPER` env var on every order call; raises if it changed since startup
+- Polls until filled so callers receive the actual fill price, not 0.0
+- Entry orders flow through the Telegram human gate; exit orders bypass it and execute immediately
 
 ### `main.py`
 - Initializes APScheduler
@@ -208,6 +210,7 @@ ATR_TP_MULTIPLIER=2.0                      # take-profit = entry + (2 × ATR)
 ATR_TRAILING_ACTIVATION=0.5               # trailing stop activates after 0.5 × ATR gain
 RISK_PER_TRADE_PCT=0.02                   # 2% of account equity per trade
 MAX_OPEN_POSITIONS=2                       # never hold more than 2 at once
+REPLY_TIMEOUT_SECS=300                    # seconds to wait for YES/NO before skipping
 ```
 
 ---

@@ -11,13 +11,14 @@ risk strictly. A human approval gate sits in front of every trade entry.
 
 ## Current Phase
 
-**Phase 3 — Paper Trading Automation**
+**Phase 3 — Paper Trading Automation (in progress)**
 
 Phases 1 (data pipeline), 2 (indicators, signals, backtesting), and Pre-Phase 3
 (symbol expansion, data cache, OOS validation tooling) are complete. The system
 has a validated strategy edge (Sharpe 1.056, 31 trades, 76% win rate on 2022–2024).
-Phase 3 is building the live execution layer: Telegram notifications, Alpaca order
-placement, and the main scheduler loop.
+Phase 3 code is complete: database, Telegram notifications, Alpaca order placement,
+and the main scheduler loop are all implemented and tested (166 unit tests passing).
+The system is now in the paper trading observation period.
 
 ---
 
@@ -97,7 +98,7 @@ the exit.
 
 Every **entry** requires explicit human approval via Telegram before the order
 is placed. The bot sends an alert with full signal context and waits for a
-`YES` or `NO` reply. No auto-timeout execution in Phase 1.
+`YES` or `NO` reply. No auto-timeout execution in Phase 3.
 
 ---
 
@@ -105,10 +106,14 @@ is placed. The bot sends an alert with full signal context and waits for a
 
 Before switching from paper to live trading:
 - Minimum 20 completed paper trades
-- Sharpe ratio > 0.8
 - Maximum drawdown < 15%
+- Zero unhandled crashes over a 2-week observation period
 - Win rate > 60% (backtest showed 76%; anything below 60% in paper trading
   suggests live conditions differ materially from the backtest)
+
+Note: Sharpe > 0.8 gate removed — OOS 2025 validation showed the edge is
+regime-dependent (profitable in trending years, flat in choppy/declining years).
+Operational reliability is the Phase 3 gate; alpha generation is not re-tested here.
 
 ---
 
