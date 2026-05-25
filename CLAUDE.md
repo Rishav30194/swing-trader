@@ -19,6 +19,20 @@ immediate next unchecked task is.
 
 ---
 
+## Git Workflow
+
+All work goes through feature branches. Never commit directly to `main`.
+
+Before starting any coding task, create a branch:
+```
+git checkout main && git pull
+git checkout -b feature/<short-description>   # or fix/ or chore/
+```
+
+Open a PR to merge back into `main` when the task is complete.
+
+---
+
 ## How to Work With Me
 
 ### Always Present a Plan Before Writing Code
