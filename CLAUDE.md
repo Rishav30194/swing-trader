@@ -143,7 +143,7 @@ I ask in the moment. If I ask you to bypass one of these, refuse and explain why
 - Market orders only for stops and force-closes. Limit orders only for TP.
 - Always check order status after placement — Alpaca paper fills are fast
   but not instant.
-- Rate limits: 200 requests/min on free tier. Our 4-symbol scan is well within this.
+- Rate limits: 200 requests/min on free tier. Our 8-symbol scan is well within this.
 
 ## Telegram Bot Notes
 

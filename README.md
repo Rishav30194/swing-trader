@@ -2,7 +2,7 @@
 
 A personal, automated swing-trading application that executes a disciplined **3-to-5-day hold strategy** on a focused list of high-quality assets. The system scans for high-probability setups using combined technical indicators and manages risk strictly. A human approval gate sits in front of every trade entry.
 
-> **Current Status: Phase 2 complete — strategy validated. Phase 3 (paper trading automation) next.**
+> **Current Status: Phase 3 in progress — database layer complete. Notifier, executor, and main loop next.**
 
 ---
 
@@ -174,7 +174,7 @@ Get your Alpaca paper trading keys at [alpaca.markets](https://alpaca.markets). 
 python scripts/validate_data.py
 ```
 
-All four symbols should return 1 year of clean OHLCV bars with no nulls.
+All eight symbols should return 1 year of clean OHLCV bars with no nulls.
 
 ### 4. Run the backtester
 
@@ -196,12 +196,12 @@ The scheduler will start scanning every 15 minutes during market hours (9:45–1
 
 ## Implementation Phases
 
-| Phase | Description                        | Status      |
-|-------|------------------------------------|-------------|
-| 1     | Environment, data pipeline, config | Complete    |
-| 2     | Indicators, signals, backtesting   | Complete    |
-| 3     | Paper trading automation           | Not started |
-| 4     | Live capital deployment            | Not started |
+| Phase | Description                        | Status                        |
+|-------|------------------------------------|-------------------------------|
+| 1     | Environment, data pipeline, config | Complete                      |
+| 2     | Indicators, signals, backtesting   | Complete                      |
+| 3     | Paper trading automation           | In progress (database done)   |
+| 4     | Live capital deployment            | Not started                   |
 
 **Phase gate before live trading:** ≥ 20 paper trades, Sharpe > 0.8, max drawdown < 15%.
 
