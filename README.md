@@ -10,12 +10,18 @@ A personal, automated swing-trading application that executes a disciplined **3-
 
 ### Asset Universe
 
-| Symbol | Type         | Rationale                                         |
-|--------|--------------|---------------------------------------------------|
-| NVDA   | Single stock | High-volatility, high-liquidity swing candidate   |
-| ASML   | Single stock | Semiconductor equipment, lower NVDA correlation   |
-| VOO    | ETF          | S&P 500 tracker, trend-following use case         |
-| QQQM   | ETF          | Nasdaq-100, tech-heavy moderate volatility        |
+| Symbol | Type         | Rationale                                           |
+|--------|--------------|-----------------------------------------------------|
+| NVDA   | Single stock | High-volatility, high-liquidity swing candidate     |
+| ASML   | Single stock | Semiconductor equipment, lower NVDA correlation     |
+| VOO    | ETF          | S&P 500 tracker, trend-following use case           |
+| QQQM   | ETF          | Nasdaq-100, tech-heavy moderate volatility          |
+| MSFT   | Single stock | Large-cap tech, strong trend structure              |
+| AAPL   | Single stock | Highest US market liquidity                         |
+| AMD    | Single stock | High-beta semiconductor, similar profile to NVDA    |
+| META   | Single stock | Strong trend structure, high liquidity              |
+| TSM    | Single stock | Semiconductor equipment, non-US, lower correlation  |
+| SPY    | ETF          | S&P 500 tracker, highest ETF liquidity              |
 
 ### Buy Signal — Three-Condition AND Gate
 
@@ -152,7 +158,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 
 # Strategy parameters (tune without touching code)
-SYMBOLS=NVDA,ASML,VOO,QQQM
+SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,META,TSM,SPY
 RSI_LOWER_BOUND=40
 RSI_UPPER_BOUND=55
 ATR_STOP_MULTIPLIER=1.5

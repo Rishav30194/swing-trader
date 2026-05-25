@@ -189,7 +189,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 
 # Strategy parameters (override defaults without touching code)
-SYMBOLS=NVDA,ASML,VOO,QQQM
+SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,META,TSM,SPY
 RSI_LOWER_BOUND=40                         # RSI must be at or above this (no panic-sell entries)
 RSI_UPPER_BOUND=55                         # RSI must be below this (only buy actual dips)
 ATR_STOP_MULTIPLIER=1.5                    # hard stop = entry − (1.5 × ATR)
