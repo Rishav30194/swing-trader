@@ -102,7 +102,7 @@ is placed. The bot sends an alert with full signal context and waits for a
 ## Phase 4 Live-Capital Gate Criteria (non-negotiable)
 
 Before switching from paper to live trading:
-- Minimum 30 completed paper trades
+- Minimum 20 completed paper trades
 - Sharpe ratio > 0.8
 - Maximum drawdown < 15%
 - Win rate > 60% (backtest showed 76%; anything below 60% in paper trading

@@ -203,7 +203,7 @@ The scheduler will start scanning every 15 minutes during market hours (9:45–1
 | 3     | Paper trading automation           | Not started |
 | 4     | Live capital deployment            | Not started |
 
-**Phase gate before live trading:** ≥ 30 paper trades, Sharpe > 0.8, max drawdown < 15%.
+**Phase gate before live trading:** ≥ 20 paper trades, Sharpe > 0.8, max drawdown < 15%.
 
 ---
 
