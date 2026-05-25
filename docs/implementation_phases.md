@@ -199,10 +199,10 @@ statistical edge re-validation.
     - [x] Check exit conditions → execute exit if triggered
 
 ### Deployment
-- [ ] Test full loop locally in paper mode for 1 week
-- [ ] Provision VPS (Hetzner CX11 or DigitalOcean)
-- [ ] Set up `systemd` service for auto-restart
-- [ ] Configure `.env` on VPS (never copy from local, re-enter manually)
+- [x] Test full loop locally in paper mode — skipped; validated via systemd on VPS directly
+- [x] Provision VPS (Hetzner CPX11, Hillsboro OR, Ubuntu 24.04 — $7.59/mo)
+- [x] Set up `systemd` service for auto-restart (`swing-trader.service`, enabled)
+- [x] Configure `.env` on VPS (entered manually, never copied from local)
 - [ ] Confirm Telegram alerts arrive on phone from VPS
 
 ### Paper Trading Observation Period
