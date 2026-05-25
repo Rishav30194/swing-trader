@@ -113,6 +113,9 @@ rate-limiting during iterative backtesting.
 - [x] Add local disk cache to `backtest.py` — `data/cache/<SYMBOL>_daily.pkl`,
       invalidated daily; avoids redundant Alpaca calls on repeated runs
 - [x] Re-run full backtest (2022–2024) with 10-symbol universe — Sharpe 1.056, DD -4.90%, 31 trades → PASS
+- [x] Remove META (false MACD signals in choppy conditions, negative P&L) and SPY (redundant with VOO)
+      Final universe: 8 symbols — NVDA, ASML, VOO, QQQM, MSFT, AAPL, AMD, TSM
+- [x] Add ADX(14), Stochastic(14,3,3), OBV indicators to `indicators.py` (computed-only; available in signal context)
 
 ---
 
@@ -123,12 +126,13 @@ paper fills, and real Telegram notifications. Prove operational reliability.
 Max drawdown < 15%. Zero unhandled crashes over a 2-week period.
 
 ### State Store
-- [ ] Write `src/database.py`
-  - [ ] Initialize SQLite schema on first run
-  - [ ] `save_position(position)` — insert new open position
-  - [ ] `update_position(id, fields)` — update SL, status, exit info
-  - [ ] `get_open_positions()` — returns all open positions
-  - [ ] `log_event(symbol, event, detail)` — append to trade_log
+- [x] Write `src/database.py`
+  - [x] Initialize SQLite schema on first run (`init_db(path)` returns connection)
+  - [x] `save_position(conn, position)` — insert new open position, returns db_id
+  - [x] `update_position(conn, db_id, **fields)` — update SL, status, exit info
+  - [x] `get_open_positions(conn)` — returns all open positions as Position objects
+  - [x] `log_event(conn, symbol, event, detail)` — append to trade_log
+  - [x] 21 unit tests in `tests/test_database.py` — all passing (in-memory SQLite)
 
 ### Notification System
 - [ ] Write `src/notifier.py`
@@ -194,7 +198,7 @@ Max drawdown < 15%. Zero unhandled crashes over a 2-week period.
 
 | Gate         | Condition                                          |
 |--------------|----------------------------------------------------|
-| Phase 1 → 2  | Clean data for all 4 symbols, no nulls, 1yr range  |
+| Phase 1 → 2  | Clean data for all symbols, no nulls, 1yr range     |
 | Phase 2 → 3  | Backtest Sharpe > 0.5, max drawdown < 25%          |
 | Phase 3 → 4  | ≥ 20 paper trades, Sharpe > 0.8, drawdown < 15%   |
 | Scale-up     | Live results match paper results over 2 weeks      |

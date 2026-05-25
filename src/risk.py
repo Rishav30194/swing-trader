@@ -52,6 +52,7 @@ class Position:
     trailing_stop: float
     take_profit:   float
     entry_date:    date
+    db_id:         int | None = None  # set when loaded from SQLite; None for backtest
 
 
 # ---------------------------------------------------------------------------

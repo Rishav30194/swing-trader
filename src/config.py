@@ -67,7 +67,7 @@ class Settings:
     telegram_chat_id: str
 
     # --- Asset universe ---
-    # The four symbols we scan. Stored as a tuple so it's immutable.
+    # The eight symbols we scan. Stored as a tuple so it's immutable.
     symbols: tuple[str, ...]
 
     # --- Strategy thresholds ---
