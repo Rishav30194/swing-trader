@@ -11,11 +11,13 @@ risk strictly. A human approval gate sits in front of every trade entry.
 
 ## Current Phase
 
-**Phase 2 — Indicators, Signal Logic & Backtesting**
+**Phase 3 — Paper Trading Automation**
 
-Phase 1 (data pipeline and configuration) is complete. The system can reliably
-fetch and validate clean OHLCV data for all four symbols. Phase 2 is finalising
-the strategy code and validating edge on historical data before paper trading begins.
+Phases 1 (data pipeline), 2 (indicators, signals, backtesting), and Pre-Phase 3
+(symbol expansion, data cache, OOS validation tooling) are complete. The system
+has a validated strategy edge (Sharpe 1.056, 31 trades, 76% win rate on 2022–2024).
+Phase 3 is building the live execution layer: Telegram notifications, Alpaca order
+placement, and the main scheduler loop.
 
 ---
 

@@ -116,6 +116,14 @@ rate-limiting during iterative backtesting.
 - [x] Remove META (false MACD signals in choppy conditions, negative P&L) and SPY (redundant with VOO)
       Final universe: 8 symbols — NVDA, ASML, VOO, QQQM, MSFT, AAPL, AMD, TSM
 - [x] Add ADX(14), Stochastic(14,3,3), OBV indicators to `indicators.py` (computed-only; available in signal context)
+- [x] Fix look-ahead bias in `backtest.py` — trailing stop was raised using bar close
+      before checking bar low against it; fixed to check exits first, update stop after
+- [x] Write `validate_oos.py` — statistical pressure-testing of OOS results:
+  - [x] Walk-forward: frozen strategy on each calendar year 2019–2025 independently
+  - [x] Permutation test: sign-randomise trade P&Ls 10,000× (H₀: win rate = 50%)
+  - [x] Bootstrap CI: resample trade P&Ls 10,000× for p5/p50/p95 on win rate,
+        mean return, and profit factor
+  - [ ] **Run `python validate_oos.py` on 2025 OOS data and record results here**
 
 ---
 
