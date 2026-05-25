@@ -177,7 +177,7 @@ Do not add any of the following unless I explicitly ask in a later phase:
 When starting a new Claude Code session on this project, do the following
 before writing any code:
 
-1. Read this file (`docs/claude_instructions.md`)
+1. Read this file (`CLAUDE.md` at the project root)
 2. Read `docs/implementation_phases.md` and identify the next unchecked task
 3. Confirm with the user: "The next task is X. Shall I proceed?"
 4. Read any source files relevant to that task

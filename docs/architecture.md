@@ -13,7 +13,7 @@
 | Notifications    | `python-telegram-bot` | Push alerts + reply handling               |
 | State store      | `SQLite` (stdlib)   | Open positions, trade log, PnL history         |
 | Config           | `python-dotenv`     | Secrets from `.env`, never hardcoded           |
-| Backtesting      | `backtrader`        | Phase 2 only                                   |
+| Backtesting      | Direct pandas sim   | Calls production modules; avoids divergence    |
 | Deployment       | Ubuntu VPS + systemd | Hetzner CX11 or DigitalOcean Droplet (~$5/mo) |
 
 ---
@@ -61,8 +61,7 @@ swing-trader/
 ├── docs/                        # ← You are here
 │   ├── project_overview.md
 │   ├── architecture.md
-│   ├── implementation_phases.md
-│   └── claude_instructions.md
+│   └── implementation_phases.md
 │
 ├── src/
 │   ├── __init__.py
