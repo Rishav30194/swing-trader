@@ -2,9 +2,9 @@
 executor.py — Alpaca order placement for the swing trader.
 
 Three public functions:
-  get_account_equity()                     — live equity fetch, never cached
-  place_buy_order(symbol, shares)          — market buy, polls until filled
-  place_sell_order(symbol, shares, reason) — market sell, polls until filled
+  get_account_equity()                      — live equity fetch, never cached
+  place_buy_order(symbol, notional)         — notional market buy, polls until filled
+  place_sell_order(symbol, shares, reason)  — fractional market sell, polls until filled
 
 Paper/live mode is set at startup from ALPACA_PAPER in .env. Each order
 function re-reads os.getenv("ALPACA_PAPER") directly — not the cached
@@ -86,8 +86,8 @@ def _order_to_dict(order) -> dict:
     return {
         "id":               str(order.id),
         "symbol":           str(order.symbol),
-        "qty":              int(float(order.qty or 0)),
-        "filled_qty":       int(float(order.filled_qty or 0)),
+        "qty":              float(order.qty or 0),
+        "filled_qty":       float(order.filled_qty or 0),
         "filled_avg_price": float(order.filled_avg_price or 0.0),
         "status":           _get_status(order),
         "side":             side,
@@ -146,22 +146,25 @@ def get_account_equity() -> float:
         raise
 
 
-def place_buy_order(symbol: str, shares: int) -> dict:
+def place_buy_order(symbol: str, notional: float) -> dict:
     """
-    Place a market buy order and wait for fill confirmation.
+    Place a notional market buy order and wait for fill confirmation.
+
+    Uses Alpaca's notional (dollar-amount) ordering so fractional shares are
+    supported for all assets. The broker determines the fractional qty filled.
 
     Returns a dict with keys: id, symbol, qty, filled_qty, filled_avg_price,
-    status, side, created_at.
+    status, side, created_at.  filled_qty is the fractional shares received.
     Raises on submission failure — caller must send an error alert and not
     record a position in the database.
     """
     _check_mode(symbol, "BUY")
-    logger.info("Submitting BUY market order: %s × %d shares", symbol, shares)
+    logger.info("Submitting BUY notional order: %s  $%.2f", symbol, notional)
 
     try:
         order = _client.submit_order(MarketOrderRequest(
             symbol=symbol,
-            qty=shares,
+            notional=round(notional, 2),
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
         ))
@@ -174,17 +177,18 @@ def place_buy_order(symbol: str, shares: int) -> dict:
     return result
 
 
-def place_sell_order(symbol: str, shares: int, reason: str) -> dict:
+def place_sell_order(symbol: str, shares: float, reason: str) -> dict:
     """
     Place a market sell order and wait for fill confirmation.
 
+    shares may be fractional (the exact qty recorded at entry).
     reason is one of: sl | trailing | tp | day5 | manual. It is logged and
     included in the returned dict so the caller can pass it to send_exit_alert.
     Raises on submission failure — caller must alert and handle.
     """
     _check_mode(symbol, "SELL")
     logger.info(
-        "Submitting SELL market order: %s × %d shares  reason=%s",
+        "Submitting SELL market order: %s × %.4f shares  reason=%s",
         symbol, shares, reason,
     )
 

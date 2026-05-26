@@ -32,7 +32,7 @@ def _make_position(
     *,
     symbol:        str   = "NVDA",
     entry_price:   float = 100.0,
-    shares:        int   = 10,
+    shares:        float = 10.0,
     stop_loss:     float = 96.0,   # entry − 2×ATR (ATR=2)
     trailing_stop: float = 96.0,
     take_profit:   float = 106.0,  # entry + 3×ATR
@@ -121,25 +121,27 @@ def test_position_size_basic():
     # equity=10_000, risk=2% → $200 risk
     # entry=100, stop=96 → $4 risk per share → 50 shares
     shares = compute_position_size(10_000.0, 0.02, 100.0, 96.0)
-    assert shares == 50
+    assert shares == pytest.approx(50.0)
 
 
-def test_position_size_floors_to_whole_shares():
-    # risk=$200, risk_per_share=$3 → 66.67 → floors to 66
+def test_position_size_allows_fractional_shares():
+    # risk=$200, risk_per_share=$3 → 66.666… — no flooring with fractional orders
     shares = compute_position_size(10_000.0, 0.02, 100.0, 97.0)
-    assert shares == 66
+    assert shares == pytest.approx(200.0 / 3.0)
 
 
 def test_position_size_scales_with_equity():
     small  = compute_position_size(5_000.0,  0.02, 100.0, 96.0)
     large  = compute_position_size(20_000.0, 0.02, 100.0, 96.0)
-    assert large == small * 4   # 20k is 4× 5k
+    assert large == pytest.approx(small * 4)   # 20k is 4× 5k
 
 
-def test_position_size_returns_zero_when_too_small():
-    # equity=10, risk=2% → $0.20 risk; entry=100, stop=96 → $4/share → 0.05 shares → 0
+def test_position_size_returns_fractional_for_small_account():
+    # equity=10, risk=2% → $0.20 risk; entry=100, stop=96 → $4/share → 0.05 shares
+    # fractional orders: no longer returns 0; main.py guards on notional < $1
     shares = compute_position_size(10.0, 0.02, 100.0, 96.0)
-    assert shares == 0
+    assert shares == pytest.approx(0.05)
+    assert 0.0 < shares < 1.0
 
 
 def test_position_size_raises_if_stop_above_entry():

@@ -7,7 +7,7 @@ Four public functions:
       → ExitLevels(stop_loss, take_profit)
 
   compute_position_size(equity, risk_pct, entry_price, stop_loss)
-      → int  (number of whole shares; 0 means position is too large to afford)
+      → float  (fractional shares; caller converts to notional dollars)
 
   update_trailing_stop(position, current_price, atr, *, atr_stop_multiplier)
       → float  (new trailing stop level; never lower than current)
@@ -47,7 +47,7 @@ class Position:
     """
     symbol:        str
     entry_price:   float
-    shares:        int
+    shares:        float
     stop_loss:     float
     trailing_stop: float
     take_profit:   float
@@ -98,16 +98,16 @@ def compute_position_size(
     risk_pct: float,
     entry_price: float,
     stop_loss: float,
-) -> int:
+) -> float:
     """
-    Compute the number of whole shares to buy based on fixed fractional risk.
+    Compute fractional shares to buy based on fixed fractional risk.
 
       risk_amount    = equity × risk_pct
       risk_per_share = entry_price − stop_loss
-      shares         = floor(risk_amount / risk_per_share)
+      shares         = risk_amount / risk_per_share  (fractional, not floored)
 
-    Returns 0 if the position would require fractional shares less than 1
-    (i.e. the account is too small to take even a minimum position).
+    The caller is responsible for converting to a notional dollar amount and
+    applying any position-size caps before submitting an order.
 
     Raises:
         ValueError: if stop_loss >= entry_price (invalid risk setup), or if
@@ -125,11 +125,11 @@ def compute_position_size(
 
     risk_amount    = equity * risk_pct
     risk_per_share = entry_price - stop_loss
-    shares         = int(risk_amount / risk_per_share)  # floor via int truncation
+    shares         = risk_amount / risk_per_share
 
     logger.debug(
         "Position size: equity=%.2f risk_pct=%.1f%% → risk=$%.2f "
-        "risk/share=%.4f → %d shares",
+        "risk/share=%.4f → %.4f shares",
         equity, risk_pct * 100, risk_amount, risk_per_share, shares,
     )
 

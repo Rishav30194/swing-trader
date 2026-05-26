@@ -144,7 +144,7 @@ def _execute_entry(
     close: float,
     exits,
 ) -> None:
-    """Fetch equity, size, place buy, persist to DB, and confirm via Telegram."""
+    """Fetch equity, size, place notional buy, persist to DB, confirm via Telegram."""
     try:
         equity = get_account_equity()
     except Exception:
@@ -152,26 +152,38 @@ def _execute_entry(
         send_error_alert(f"{symbol}: equity fetch failed — entry aborted")
         return
 
-    shares = compute_position_size(
+    shares_float = compute_position_size(
         equity=equity,
         risk_pct=settings.risk_per_trade_pct,
         entry_price=close,
         stop_loss=exits.stop_loss,
     )
-    if shares < 1:
-        logger.warning("%s: position size = 0 — equity too small, entry skipped", symbol)
-        send_error_alert(f"{symbol}: position size = 0 (equity=${equity:,.2f}) — skipped")
+    # Cap position at max_position_pct of equity regardless of risk sizing.
+    # On a $1,000 account with max_position_pct=0.25, no single position
+    # can exceed $250 — prevents any one trade consuming the entire account.
+    uncapped_notional = shares_float * close
+    max_notional      = equity * settings.max_position_pct
+    notional          = min(uncapped_notional, max_notional)
+
+    if notional < 1.0:
+        logger.warning("%s: notional $%.2f too small — entry skipped", symbol, notional)
+        send_error_alert(f"{symbol}: notional too small (${notional:.2f}) — skipped")
         return
 
+    logger.info(
+        "%s: notional=$%.2f (risk-sized=$%.2f cap=$%.2f)",
+        symbol, notional, uncapped_notional, max_notional,
+    )
+
     try:
-        order = place_buy_order(symbol, shares)
+        order = place_buy_order(symbol, notional)
     except Exception:
         logger.exception("%s: buy order failed", symbol)
         send_error_alert(f"{symbol}: buy order failed — see logs")
         return
 
     fill_price = order["filled_avg_price"] or close
-    filled_qty = order["filled_qty"] or shares
+    filled_qty = order["filled_qty"] or (notional / close)
 
     position = Position(
         symbol=symbol,
@@ -188,6 +200,7 @@ def _execute_entry(
         "order_id":    order["id"],
         "fill_price":  fill_price,
         "shares":      filled_qty,
+        "notional":    notional,
         "stop_loss":   exits.stop_loss,
         "take_profit": exits.take_profit,
     })
