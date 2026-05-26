@@ -239,6 +239,13 @@ statistical edge re-validation.
 - [x] `MAX_POSITION_PCT=0.25` — caps each position at 25% of equity ($250 on $1k)
 - [x] Database schema: `shares REAL NOT NULL`
 
+### Strategy enhancements to evaluate after paper trading (do not touch before Phase 4)
+- [ ] **Trailing-stop-only exit** — remove the day-5 force-close and let the trailing stop be
+      the sole time-based protection. Paper trading showed 71% of exits hit day-5 at avg +1.47%;
+      winners like NVDA (+9.57%) and TSM (+4.44%) were cut short. Evaluate on fresh live data
+      whether removing the calendar rule lets winners run further without materially increasing
+      drawdown. Requires backtesting on untouched post-paper data before enabling in production.
+
 ### Still required before going live
 - [ ] Confirm Phase 3 gate criteria are met (≥ 20 trades, drawdown < 15%, zero crashes/2wk)
 - [ ] Remove ASML from live `.env` SYMBOLS — at $1,600+, even 25% cap gives ~0.15 shares,
