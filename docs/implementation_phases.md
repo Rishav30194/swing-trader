@@ -217,8 +217,8 @@ statistical edge re-validation.
 - [x] Add `MAX_POSITION_PCT=0.25` to VPS `.env`
 - [x] Run `python3.12 scripts/migrate_db.py trades.db` on VPS
 - [x] Deploy updated code to VPS (`git pull && sudo systemctl restart swing-trader`)
-- [ ] Run `python scripts/test_notional_order.py` during market hours to verify notional flow
-- [ ] Confirm Telegram alerts arrive on phone from VPS
+- [x] Run `python scripts/test_notional_order.py` during market hours to verify notional flow
+- [x] Confirm Telegram alerts arrive on phone from VPS
 
 ### Paper Trading Observation Period
 - [ ] Run for minimum 4–8 weeks (target ≥ 20 trades)
