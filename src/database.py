@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS positions (
     symbol          TEXT    NOT NULL,
     entry_date      TEXT    NOT NULL,
     entry_price     REAL    NOT NULL,
-    shares          INTEGER NOT NULL,
+    shares          REAL    NOT NULL,
     stop_loss       REAL    NOT NULL,
     trailing_stop   REAL    NOT NULL,
     take_profit     REAL    NOT NULL,
@@ -111,7 +111,7 @@ def save_position(conn: sqlite3.Connection, position: Position) -> int:
     )
     conn.commit()
     db_id = cursor.lastrowid
-    logger.info("Saved position id=%d  %s  %d shares @ %.4f", db_id, position.symbol, position.shares, position.entry_price)
+    logger.info("Saved position id=%d  %s  %.4f shares @ %.4f", db_id, position.symbol, position.shares, position.entry_price)
     return db_id  # type: ignore[return-value]
 
 

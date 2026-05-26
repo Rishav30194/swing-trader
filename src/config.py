@@ -98,6 +98,10 @@ class Settings:
     # Seconds to wait for a YES/NO reply before treating the signal as skipped.
     reply_timeout_secs: int
 
+    # Max fraction of equity to deploy in a single position (e.g. 0.25 = 25%).
+    # Caps the notional value sent to Alpaca regardless of risk-based sizing.
+    max_position_pct: float
+
     # --- Derived convenience properties ---
 
     @property
@@ -157,6 +161,7 @@ def _load_settings() -> Settings:
         risk_per_trade_pct=float(_get("RISK_PER_TRADE_PCT", "0.02")),
         max_open_positions=int(_get("MAX_OPEN_POSITIONS", "2")),
         reply_timeout_secs=int(_get("REPLY_TIMEOUT_SECS", "300")),
+        max_position_pct=float(_get("MAX_POSITION_PCT", "0.25")),
     )
 
 

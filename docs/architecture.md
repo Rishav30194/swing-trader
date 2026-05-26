@@ -168,7 +168,7 @@ CREATE TABLE positions (
     symbol          TEXT NOT NULL,
     entry_date      TEXT NOT NULL,          -- ISO 8601
     entry_price     REAL NOT NULL,
-    shares          INTEGER NOT NULL,
+    shares          REAL    NOT NULL,
     stop_loss       REAL NOT NULL,
     trailing_stop   REAL NOT NULL,
     take_profit     REAL NOT NULL,
@@ -216,6 +216,7 @@ ATR_TRAILING_ACTIVATION=0.5               # trailing stop activates after 0.5 ×
 RISK_PER_TRADE_PCT=0.02                   # 2% of account equity per trade
 MAX_OPEN_POSITIONS=2                       # never hold more than 2 at once
 REPLY_TIMEOUT_SECS=300                    # seconds to wait for YES/NO before skipping
+MAX_POSITION_PCT=0.25                     # max 25% of equity per position ($250 on $1k)
 ```
 
 ---
@@ -279,6 +280,12 @@ The only change required to go from paper to live:
 
 1. Set `ALPACA_PAPER=false` in `.env`
 2. Replace `ALPACA_API_KEY` and `ALPACA_API_SECRET` with live credentials
-3. Restart the service
+3. Set `SYMBOLS` to the live universe (exclude ASML on a $1k account — price too high)
+4. Restart the service
 
 Zero code changes. This is enforced by design in `config.py` and `executor.py`.
+
+**Note:** Buy orders use Alpaca's notional (dollar-amount) ordering, so fractional
+shares are supported automatically. Sell orders use the exact fractional `qty`
+recorded at entry. `MAX_POSITION_PCT` (default 0.25) caps any single position
+at 25% of equity — essential for small accounts.

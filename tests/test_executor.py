@@ -67,8 +67,8 @@ def _mock_account(equity: str = "100000.00") -> MagicMock:
 class TestOrderToDict:
     def test_converts_numeric_fields(self):
         result = _order_to_dict(_mock_order(qty="10", filled_qty="10", filled_avg_price="134.50"))
-        assert result["qty"]              == 10
-        assert result["filled_qty"]       == 10
+        assert result["qty"]              == pytest.approx(10.0)
+        assert result["filled_qty"]       == pytest.approx(10.0)
         assert result["filled_avg_price"] == 134.50
 
     def test_converts_string_fields(self):
@@ -174,21 +174,21 @@ class TestPlaceBuyOrder:
         with patch.object(executor, "_client") as mock_client:
             self._setup(mock_client)
             with patch("time.sleep"):
-                result = place_buy_order("NVDA", 10)
+                result = place_buy_order("NVDA", 1340.0)  # $1340 notional
         assert result["filled_avg_price"] == 134.50
         assert result["status"]           == "filled"
 
-    def test_submits_market_buy_order(self):
+    def test_submits_notional_market_buy_order(self):
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
         with patch.object(executor, "_client") as mock_client:
             self._setup(mock_client)
             with patch("time.sleep"):
-                place_buy_order("NVDA", 10)
+                place_buy_order("NVDA", 1340.0)
         submitted_request = mock_client.submit_order.call_args.args[0]
         assert isinstance(submitted_request, MarketOrderRequest)
         assert submitted_request.symbol           == "NVDA"
-        assert submitted_request.qty              == 10
+        assert submitted_request.notional         == pytest.approx(1340.0)
         assert submitted_request.side             == OrderSide.BUY
         assert submitted_request.time_in_force    == TimeInForce.DAY
 
@@ -196,13 +196,13 @@ class TestPlaceBuyOrder:
         with patch.object(executor, "_client") as mock_client:
             mock_client.submit_order.side_effect = Exception("Rejected")
             with pytest.raises(Exception, match="Rejected"):
-                place_buy_order("NVDA", 10)
+                place_buy_order("NVDA", 1340.0)
 
     def test_does_not_include_reason_key(self):
         with patch.object(executor, "_client") as mock_client:
             self._setup(mock_client)
             with patch("time.sleep"):
-                result = place_buy_order("NVDA", 10)
+                result = place_buy_order("NVDA", 1340.0)
         assert "reason" not in result
 
 
@@ -261,7 +261,7 @@ class TestPaperGuard:
         with patch.dict(os.environ, {"ALPACA_PAPER": flipped}):
             with patch.object(executor, "_client"):
                 with pytest.raises(RuntimeError, match="changed since startup"):
-                    place_buy_order("NVDA", 10)
+                    place_buy_order("NVDA", 1340.0)
 
     def test_does_not_raise_when_env_matches_startup(self):
         current = "true" if executor.settings.alpaca_paper else "false"
@@ -271,5 +271,5 @@ class TestPaperGuard:
                 mock_client.submit_order.return_value    = _mock_order(status="new")
                 mock_client.get_order_by_id.return_value = filled
                 with patch("time.sleep"):
-                    result = place_buy_order("NVDA", 10)
+                    result = place_buy_order("NVDA", 1340.0)
         assert result["status"] == "filled"
