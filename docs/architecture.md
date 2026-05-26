@@ -83,8 +83,10 @@ swing-trader/
 │   └── test_executor.py    # Unit tests for Alpaca order placement (mocked TradingClient)
 │
 ├── scripts/
-│   ├── validate_data.py    # Phase 1 data validation script
-│   └── pull_db.sh          # Pull trades.db snapshot from VPS for local review
+│   ├── validate_data.py        # Phase 1 data validation script
+│   ├── pull_db.sh              # Pull trades.db snapshot from VPS for local review
+│   ├── migrate_db.py           # Migrate shares column INTEGER → REAL (run once on VPS)
+│   └── test_notional_order.py  # Integration smoke-test for fractional/notional order flow
 │
 ├── logs/                   # Runtime logs (gitignored)
 ├── trades.db               # Local DB snapshot pulled from VPS (gitignored)

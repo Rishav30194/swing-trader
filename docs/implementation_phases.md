@@ -175,12 +175,20 @@ statistical edge re-validation.
 
 ### Executor
 - [x] Write `src/executor.py`
-  - [x] `place_buy_order(symbol, shares)` — market order, polls until filled
-  - [x] `place_sell_order(symbol, shares, reason)` — market order, reason in returned dict
+  - [x] `place_buy_order(symbol, notional)` — notional (dollar-amount) market order; Alpaca returns fractional qty filled
+  - [x] `place_sell_order(symbol, shares, reason)` — fractional qty market sell, reason in returned dict
   - [x] `get_account_equity()` — fetches live equity on every call, never cached
   - [x] Paper vs live switch via `config.ALPACA_PAPER`; env var re-read on every order call
   - [x] Log every order attempt and Alpaca response
   - [x] 22 unit tests in `tests/test_executor.py` — all passing (mocked TradingClient)
+
+  > **Executor updated (done during Phase 3):** Switched from `qty=whole_shares` to
+  > `notional=dollar_amount` for buy orders. Whole-share ordering is impractical on a
+  > $1k live account — ASML at $1,628 and VOO at $684 would each exceed the account.
+  > `Position.shares` is now `float`. `compute_position_size` returns `float` (no floor).
+  > `MAX_POSITION_PCT` (default 0.25) caps any single position at 25% of equity.
+  > Database schema updated: `shares REAL NOT NULL` (was `INTEGER`).
+  > All 166 unit tests pass. Run `scripts/migrate_db.py` on VPS before next deploy.
 
 ### Main Loop
 - [x] Write `main.py`
@@ -204,6 +212,12 @@ statistical edge re-validation.
 - [x] Set up `systemd` service for auto-restart (`swing-trader.service`, enabled)
 - [x] Configure `.env` on VPS (entered manually, never copied from local)
 - [x] Write `scripts/pull_db.sh` — checkpoint WAL + SCP trades.db to local for DB Browser review
+- [x] Write `scripts/migrate_db.py` — migrate `shares INTEGER → REAL` schema on existing DBs
+- [x] Write `scripts/test_notional_order.py` — integration smoke-test for notional buy/sell flow
+- [x] Add `MAX_POSITION_PCT=0.25` to VPS `.env`
+- [x] Run `python3.12 scripts/migrate_db.py trades.db` on VPS
+- [x] Deploy updated code to VPS (`git pull && sudo systemctl restart swing-trader`)
+- [ ] Run `python scripts/test_notional_order.py` during market hours to verify notional flow
 - [ ] Confirm Telegram alerts arrive on phone from VPS
 
 ### Paper Trading Observation Period
@@ -217,13 +231,22 @@ statistical edge re-validation.
 ## Phase 4 — Live Capital Deployment
 **Goal:** Real money. Treat this like a production system.
 **Pre-conditions:** All Phase 3 gate criteria must be met. No exceptions.
+**Starting capital:** $1,000 for at least 6 months before scaling.
 
-- [ ] Confirm Phase 3 gate criteria are met (Sharpe, drawdown, trade count)
+### Code changes already done (during Phase 3)
+- [x] Switched to fractional/notional orders — `place_buy_order(symbol, notional)`
+- [x] `Position.shares: float`, `compute_position_size` returns float
+- [x] `MAX_POSITION_PCT=0.25` — caps each position at 25% of equity ($250 on $1k)
+- [x] Database schema: `shares REAL NOT NULL`
+
+### Still required before going live
+- [ ] Confirm Phase 3 gate criteria are met (≥ 20 trades, drawdown < 15%, zero crashes/2wk)
+- [ ] Remove ASML from live `.env` SYMBOLS — at $1,600+, even 25% cap gives ~0.15 shares,
+      too small to be meaningful on a $1k account; keep in paper universe
 - [ ] Generate live Alpaca API keys (separate from paper keys)
-- [ ] Update `.env` on VPS: `ALPACA_PAPER=false` + live credentials
-- [ ] Start with 10–20% of intended capital allocation
-- [ ] Monitor closely for first 2 weeks — compare to paper behavior
-- [ ] Scale to full allocation only after live results match paper results
+- [ ] Update `.env` on VPS: `ALPACA_PAPER=false` + live credentials + updated SYMBOLS
+- [ ] Start with $1,000 capital — monitor closely for first 2 weeks
+- [ ] Scale up only after live fills and P&L match paper behavior
 
 ---
 
