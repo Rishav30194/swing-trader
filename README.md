@@ -2,7 +2,7 @@
 
 A personal, automated swing-trading application that executes a disciplined **3-to-5-day hold strategy** on a focused list of high-quality assets. The system scans for high-probability setups using combined technical indicators and manages risk strictly. A human approval gate sits in front of every trade entry.
 
-> **Current Status: Phase 3 in progress — database layer complete. Notifier, executor, and main loop next.**
+> **Current Status: Phase 3 in progress — all implementation complete. System deployed to VPS, now in paper trading observation period (target ≥ 20 trades).**
 
 ---
 
