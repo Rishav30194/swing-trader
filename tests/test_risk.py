@@ -250,23 +250,33 @@ def test_take_profit_triggered_at_exactly_tp_price():
     assert check_exit_conditions(pos, bar) == "tp"
 
 
-def test_day5_triggered_after_5_calendar_days():
+def test_day5_triggered_after_5_trading_days():
+    # Entry Tue Jan 2 → 5 trading days = Wed Jan 9 (Tue+Wed+Thu+Fri+Mon = 5)
     pos = _make_position(entry_date=date(2024, 1, 2))
-    # Jan 2 + 5 days = Jan 7
-    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-07")
+    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-09")
     assert check_exit_conditions(pos, bar) == "day5"
 
 
-def test_day5_not_triggered_on_day_4():
+def test_day5_not_triggered_on_trading_day_4():
+    # Entry Tue Jan 2 → 4 trading days = Mon Jan 8 (Tue+Wed+Thu+Fri = 4)
     pos = _make_position(entry_date=date(2024, 1, 2))
-    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-06")  # 4 days
+    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-08")
     assert check_exit_conditions(pos, bar) is None
 
 
 def test_day5_triggered_beyond_day_5():
+    # Entry Tue Jan 2 → 6 trading days = Thu Jan 10
     pos = _make_position(entry_date=date(2024, 1, 2))
-    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-10")  # 8 days
+    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-10")
     assert check_exit_conditions(pos, bar) == "day5"
+
+
+def test_day5_not_triggered_thursday_entry_tuesday_exit():
+    # The bug this fix addresses: Thu Jan 11 entry + 5 calendar days = Tue Jan 16
+    # but that is only 3 trading days (Thu+Fri+Mon) — should NOT fire
+    pos = _make_position(entry_date=date(2024, 1, 11))
+    bar = _make_bar(low=97.0, high=103.0, timestamp="2024-01-16")
+    assert check_exit_conditions(pos, bar) is None
 
 
 def test_hard_stop_takes_priority_over_trailing():

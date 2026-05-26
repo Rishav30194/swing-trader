@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,7 @@ def check_exit_conditions(
         1. "sl"       — hard stop-loss hit (bar low ≤ stop_loss)
         2. "trailing" — trailing stop hit   (bar low ≤ trailing_stop)
         3. "tp"       — take-profit hit     (bar high ≥ take_profit)
-        4. "day5"     — 5 calendar days elapsed since entry
+        4. "day5"     — 5 trading days (Mon–Fri) elapsed since entry
 
     Returns None if no exit condition is triggered.
     """
@@ -220,11 +221,11 @@ def check_exit_conditions(
         )
         return "tp"
 
-    days_held = (bar_date - position.entry_date).days
-    if days_held >= 5:
+    trading_days_held = int(np.busday_count(position.entry_date, bar_date))
+    if trading_days_held >= 5:
         logger.info(
-            "%s: day-5 force-close — held %d calendar days",
-            position.symbol, days_held,
+            "%s: day-5 force-close — held %d trading days",
+            position.symbol, trading_days_held,
         )
         return "day5"
 
