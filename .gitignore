@@ -4,5 +4,8 @@ __pycache__/
 *.pyc
 logs/
 *.db
+*.db-shm
+*.db-wal
+*.db.bak
 data/
 trades.db
