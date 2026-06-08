@@ -113,15 +113,12 @@ swing-trader/
 │   ├── indicators.py   # RSI, EMA, MACD, Vol SMA, ATR (pure functions)
 │   ├── signals.py      # Three-condition AND gate evaluation
 │   ├── risk.py         # ATR-based SL/TP, position sizing, trailing stop
-│   ├── notifier.py     # Telegram alerts + YES/NO reply handler
+│   ├── database.py     # SQLite state store + weekly summary aggregator
+│   ├── notifier.py     # Telegram alerts, weekly heartbeat, YES/NO reply handler
 │   └── executor.py     # Alpaca order placement (paper + live)
-├── tests/
-│   ├── test_indicators.py
-│   ├── test_signals.py
-│   └── test_risk.py
+├── tests/              # 180 unit tests (indicators, signals, risk, database, notifier, executor)
 ├── docs/               # Architecture and implementation phase docs
-├── scripts/
-│   └── validate_data.py
+├── scripts/            # Data validation, DB pull/migrate, notional order smoke-test
 ├── main.py             # Entry point — scheduler + orchestration
 ├── backtest.py         # Phase 2 standalone backtest runner
 └── requirements.txt
@@ -190,7 +187,7 @@ python backtest.py --start 2023-01-01 --end 2024-12-31     # bull market
 python main.py
 ```
 
-The scheduler will start scanning every 15 minutes during market hours (9:45–15:45 EST). Trade entry alerts are sent to Telegram for human approval.
+The scheduler will start scanning every 15 minutes during market hours (9:45–15:45 EST). Trade entry alerts are sent to Telegram for human approval. A weekly summary is also sent every Friday at 16:30 EST — a clean health check (status, equity, open positions, trades closed, signals) confirming the app is running.
 
 ---
 

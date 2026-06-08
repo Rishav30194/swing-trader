@@ -48,7 +48,8 @@
 ┌────────────────────▼────────────────────────────────┐
 │              State & Scheduler Layer                │
 │  SQLite — positions, trade log                      │
-│  APScheduler — scans every 15 min, 9:45–15:45 EST   │
+│  APScheduler — scan every 15 min, 9:45–15:45 EST    │
+│              + weekly summary, Fri 16:30 ET         │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -140,12 +141,17 @@ swing-trader/
 - Initialises SQLite schema on first run via `init_db(path)`
 - `save_position` / `update_position` / `get_open_positions` — position lifecycle
 - `log_event` — appends structured events to `trade_log` for audit and review
+- `get_weekly_summary(conn, since)` — read-only aggregator returning a
+  `WeeklySummary` (trades closed, win/loss split, net P&L, open symbols,
+  signal count) for the weekly heartbeat
 - In-memory SQLite used in tests; file-backed in production
 
 ### `notifier.py`
 - Sends formatted Telegram messages for all events
 - Handles the YES/NO reply flow for trade entry approval
 - Separate notification paths for entries (gated) vs exits (immediate)
+- `send_weekly_summary` — Friday heartbeat; defensive like `send_error_alert`
+  (never raises, so a failed send cannot disturb the scheduler)
 - Telegram's async API wrapped with `asyncio.run()` — rest of codebase stays synchronous
 
 ### `executor.py`
@@ -155,8 +161,11 @@ swing-trader/
 - Entry orders flow through the Telegram human gate; exit orders bypass it and execute immediately
 
 ### `main.py`
-- Initializes APScheduler
-- Market hours check: skips scan outside 9:45–15:45 EST on trading days
+- Initializes APScheduler with two jobs:
+  - **Trading cycle** — every 15 min, monitors exits then scans for entries
+  - **Weekly summary** — Friday 16:30 ET heartbeat (runs unconditionally so a
+    quiet week still confirms the app is alive)
+- Market hours check: skips the trading cycle outside 9:45–15:45 EST on trading days
 - Orchestrates: fetch → indicators → signals → [gate] → execute → log
 
 ---

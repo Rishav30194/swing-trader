@@ -162,7 +162,8 @@ statistical edge re-validation.
   - [x] `update_position(conn, db_id, **fields)` — update SL, status, exit info
   - [x] `get_open_positions(conn)` — returns all open positions as Position objects
   - [x] `log_event(conn, symbol, event, detail)` — append to trade_log
-  - [x] 21 unit tests in `tests/test_database.py` — all passing (in-memory SQLite)
+  - [x] `get_weekly_summary(conn, since)` — read-only weekly activity aggregator (added with weekly heartbeat)
+  - [x] 26 unit tests in `tests/test_database.py` — all passing (in-memory SQLite)
 
 ### Notification System
 - [x] Write `src/notifier.py`
@@ -170,8 +171,9 @@ statistical edge re-validation.
   - [x] `send_execution_alert(symbol, order, position)` — filled notification
   - [x] `send_exit_alert(symbol, position, reason, exit_price)` — exit notification with P&L
   - [x] `send_error_alert(error)` — crash/error notification, never raises
+  - [x] `send_weekly_summary(summary, equity)` — Friday heartbeat, never raises (added during observation period)
   - [x] `listen_for_reply(timeout_seconds)` — poll for YES/NO reply; drains queue before listening
-  - [x] 38 unit tests in `tests/test_notifier.py` — all passing (mocked Bot)
+  - [x] 46 unit tests in `tests/test_notifier.py` — all passing (mocked Bot)
 
 ### Executor
 - [x] Write `src/executor.py`
@@ -225,6 +227,8 @@ statistical edge re-validation.
 - [ ] Log every trade outcome in `trade_log`
 - [ ] Weekly review: run `bash scripts/pull_db.sh` and review positions + trade_log in DB Browser
 - [ ] Do not adjust strategy parameters mid-observation (taints the sample)
+- [x] Add weekly Telegram heartbeat summary (Fri 16:30 ET) so the app's health is
+      visible each week without opening a laptop — observability only, no strategy change (PR #9)
 
 ---
 
