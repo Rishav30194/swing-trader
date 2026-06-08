@@ -18,12 +18,26 @@ Schema (matches docs/architecture.md exactly):
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from src.risk import Position
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WeeklySummary:
+    """Aggregated activity over a reporting window, for the weekly heartbeat."""
+    period_start:    date
+    period_end:      date
+    trades_closed:   int
+    wins:            int
+    losses:          int
+    net_pnl_dollars: float
+    open_symbols:    list[str]
+    signals:         int
 
 _CREATE_POSITIONS = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -211,3 +225,53 @@ def log_event(
     )
     conn.commit()
     logger.debug("trade_log: %s  %s  %s", ts, symbol, event)
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+def get_weekly_summary(conn: sqlite3.Connection, since: date) -> WeeklySummary:
+    """
+    Aggregate trading activity from `since` (inclusive) up to now.
+
+    Read-only. Counts positions closed in the window (with win/loss split and
+    net P&L), the currently-open positions, and `signal` events logged in the
+    window. ISO date/timestamp strings compare lexicographically, so a date
+    bound matches both `exit_date` ("YYYY-MM-DD") and `timestamp` ("YYYY-MM-DDT…").
+
+    Returns:
+        A WeeklySummary covering [since, today].
+    """
+    since_iso = since.isoformat()
+
+    closed = conn.execute(
+        """
+        SELECT pnl_dollars FROM positions
+        WHERE status = 'closed' AND exit_date >= ?
+        """,
+        (since_iso,),
+    ).fetchall()
+
+    pnls       = [row["pnl_dollars"] or 0.0 for row in closed]
+    wins       = sum(1 for p in pnls if p >= 0)
+    losses     = sum(1 for p in pnls if p < 0)
+    net_pnl    = sum(pnls)
+
+    open_symbols = [pos.symbol for pos in get_open_positions(conn)]
+
+    signals = conn.execute(
+        "SELECT COUNT(*) FROM trade_log WHERE event = 'signal' AND timestamp >= ?",
+        (since_iso,),
+    ).fetchone()[0]
+
+    return WeeklySummary(
+        period_start=since,
+        period_end=date.today(),
+        trades_closed=len(pnls),
+        wins=wins,
+        losses=losses,
+        net_pnl_dollars=net_pnl,
+        open_symbols=open_symbols,
+        signals=signals,
+    )

@@ -17,18 +17,20 @@ import logging
 import logging.handlers
 import sqlite3
 import zoneinfo
-from datetime import date, datetime, time as dtime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetCalendarRequest
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from src.config import settings
 from src.data import get_historical_bars
 from src.database import (
     get_open_positions,
+    get_weekly_summary,
     init_db,
     log_event,
     save_position,
@@ -42,6 +44,7 @@ from src.notifier import (
     send_execution_alert,
     send_exit_alert,
     send_signal_alert,
+    send_weekly_summary,
 )
 from src.risk import (
     Position,
@@ -56,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 _BARS_LOOKBACK = 90   # days of history for indicator warm-up
 _ET = zoneinfo.ZoneInfo("America/New_York")
+
+# Weekly heartbeat: Friday after the close. Operational schedule, not a
+# strategy parameter — kept as constants like _BARS_LOOKBACK.
+_SUMMARY_DAY    = "fri"
+_SUMMARY_HOUR   = 16
+_SUMMARY_MINUTE = 30
+_SUMMARY_WINDOW_DAYS = 7
 
 _cal_client = TradingClient(
     api_key=settings.alpaca_api_key,
@@ -381,6 +391,26 @@ def _run_cycle(conn: sqlite3.Connection) -> None:
     logger.info("=== Cycle end ===")
 
 
+def _send_weekly_summary(conn: sqlite3.Connection) -> None:
+    """Weekly heartbeat: gather DB activity + live equity, send to Telegram.
+
+    Runs unconditionally (not gated on market hours) so a quiet week still
+    produces a 'running' heartbeat. Equity is best-effort — if the account
+    fetch fails the summary still sends with equity marked unavailable, so the
+    message itself never depends on Alpaca being reachable.
+    """
+    since   = date.today() - timedelta(days=_SUMMARY_WINDOW_DAYS)
+    summary = get_weekly_summary(conn, since)
+
+    try:
+        equity: float | None = get_account_equity()
+    except Exception:
+        logger.exception("Weekly summary: equity fetch failed — reporting unavailable")
+        equity = None
+
+    send_weekly_summary(summary, equity)
+
+
 def _configure_logging() -> None:
     """Configure console and rotating file logging."""
     Path("logs").mkdir(exist_ok=True)
@@ -416,6 +446,17 @@ def main() -> None:
         next_run_time=datetime.now(timezone.utc),
         id="main_cycle",
         misfire_grace_time=60,
+    )
+    scheduler.add_job(
+        lambda: _send_weekly_summary(conn),
+        trigger=CronTrigger(
+            day_of_week=_SUMMARY_DAY,
+            hour=_SUMMARY_HOUR,
+            minute=_SUMMARY_MINUTE,
+            timezone="America/New_York",
+        ),
+        id="weekly_summary",
+        misfire_grace_time=3600,
     )
 
     logger.info(

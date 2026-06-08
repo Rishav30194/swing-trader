@@ -5,11 +5,12 @@ All public functions are synchronous. python-telegram-bot v20+ uses asyncio
 internally; each function wraps its async work with asyncio.run() so the rest
 of the codebase stays synchronous.
 
-Five public functions:
+Six public functions:
   send_signal_alert(symbol, signal_context)         — buy signal, full indicator snapshot
   send_execution_alert(symbol, order, position)     — entry fill confirmation
   send_exit_alert(symbol, position, reason, price)  — exit confirmation with P&L
-  send_error_alert(error)                           — crash/error, never raises
+  send_error_alert(error)                            — crash/error, never raises
+  send_weekly_summary(summary, equity)             — weekly heartbeat, never raises
   listen_for_reply(timeout_seconds)                 — poll for YES or NO reply
 
 Note: send_exit_alert takes exit_price as an explicit argument. The spec lists
@@ -26,6 +27,7 @@ import telegram
 from telegram.constants import ParseMode
 
 from src.config import settings
+from src.database import WeeklySummary
 from src.risk import Position
 
 logger = logging.getLogger(__name__)
@@ -117,6 +119,36 @@ def _fmt_error(error: Exception | str) -> str:
     # html.escape prevents malformed HTML if the error message contains < > &
     safe = html.escape(str(error))
     return f"🚨 <b>ERROR</b>\n\n<pre>{safe}</pre>"
+
+
+def _fmt_weekly(summary: WeeklySummary, equity: float | None) -> str:
+    start = summary.period_start.strftime("%b %d")
+    # Drop the repeated month on the end date within the same month: "Jun 02–08".
+    end_fmt = "%d" if summary.period_start.month == summary.period_end.month else "%b %d"
+    end   = summary.period_end.strftime(end_fmt)
+
+    equity_str = f"${equity:,.2f}" if equity is not None else "unavailable ⚠️"
+    open_str   = ", ".join(summary.open_symbols) if summary.open_symbols else "none"
+
+    if summary.trades_closed:
+        closed_str = (
+            f"{summary.trades_closed} trades  "
+            f"({summary.wins}W / {summary.losses}L)  "
+            f"${summary.net_pnl_dollars:+,.2f}"
+        )
+    else:
+        closed_str = "0 trades"
+
+    return (
+        f"📊 <b>Weekly Summary — {start}–{end}</b>\n\n"
+        f"<pre>"
+        f"Status   : ✅ Running\n"
+        f"Equity   : {equity_str}\n"
+        f"Open     : {open_str}\n"
+        f"Closed   : {closed_str}\n"
+        f"Signals  : {summary.signals}"
+        f"</pre>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +257,19 @@ def send_error_alert(error: Exception | str) -> None:
         asyncio.run(_send(_fmt_error(error)))
     except Exception:
         logger.exception("send_error_alert failed — could not reach Telegram")
+
+
+def send_weekly_summary(summary: WeeklySummary, equity: float | None) -> None:
+    """
+    Send the weekly heartbeat summary. Never raises — a failed heartbeat must
+    not disturb the scheduler. equity is None when the account fetch failed,
+    which the message renders as 'unavailable' so the problem is still visible.
+    """
+    try:
+        asyncio.run(_send(_fmt_weekly(summary, equity)))
+        logger.info("Weekly summary sent")
+    except Exception:
+        logger.exception("send_weekly_summary failed — could not reach Telegram")
 
 
 def listen_for_reply(timeout_seconds: int) -> bool | None:
