@@ -17,8 +17,9 @@ Phases 1 (data pipeline), 2 (indicators, signals, backtesting), and Pre-Phase 3
 (symbol expansion, data cache, OOS validation tooling) are complete. The system
 has a validated strategy edge (Sharpe 1.056, 31 trades, 76% win rate on 2022–2024).
 Phase 3 code is complete: database, Telegram notifications, Alpaca order placement,
-and the main scheduler loop are all implemented and tested (166 unit tests passing).
-The system is now in the paper trading observation period.
+and the main scheduler loop are all implemented and tested (180 unit tests passing).
+The system is now in the paper trading observation period, with a weekly Telegram
+heartbeat summary confirming the app is running each Friday.
 
 ---
 
