@@ -10,7 +10,16 @@ from datetime import date
 
 import pytest
 
-from src.database import init_db, save_position, update_position, get_open_positions, log_event
+from datetime import timedelta
+
+from src.database import (
+    init_db,
+    save_position,
+    update_position,
+    get_open_positions,
+    get_weekly_summary,
+    log_event,
+)
 from src.risk import Position
 
 
@@ -241,3 +250,67 @@ def test_log_multiple_events(conn):
     log_event(conn, "NVDA", "bought", {"shares": 10, "price": 500.0})
     count = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
     assert count == 3
+
+
+# ---------------------------------------------------------------------------
+# get_weekly_summary
+# ---------------------------------------------------------------------------
+
+def _close_position(conn, *, symbol: str, pnl: float, exit_date: date) -> None:
+    """Insert a position and immediately mark it closed with the given P&L."""
+    db_id = save_position(conn, _make_position(symbol=symbol))
+    update_position(
+        conn, db_id,
+        status="closed",
+        exit_date=exit_date.isoformat(),
+        exit_price=510.0,
+        exit_reason="tp",
+        pnl_dollars=pnl,
+        pnl_pct=pnl / 10,
+    )
+
+
+def test_weekly_summary_empty_db(conn):
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.trades_closed == 0
+    assert s.wins == 0 and s.losses == 0
+    assert s.net_pnl_dollars == 0.0
+    assert s.open_symbols == []
+    assert s.signals == 0
+    assert s.period_end == date.today()
+
+
+def test_weekly_summary_counts_wins_losses_and_net(conn):
+    today = date.today()
+    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
+    _close_position(conn, symbol="AMD",  pnl=-40.0, exit_date=today - timedelta(days=2))
+    s = get_weekly_summary(conn, today - timedelta(days=7))
+    assert s.trades_closed == 2
+    assert s.wins == 1
+    assert s.losses == 1
+    assert s.net_pnl_dollars == pytest.approx(80.0)
+
+
+def test_weekly_summary_excludes_trades_before_window(conn):
+    today = date.today()
+    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
+    _close_position(conn, symbol="AMD",  pnl=999.0, exit_date=today - timedelta(days=30))
+    s = get_weekly_summary(conn, today - timedelta(days=7))
+    assert s.trades_closed == 1
+    assert s.net_pnl_dollars == pytest.approx(120.0)
+
+
+def test_weekly_summary_reports_open_symbols(conn):
+    save_position(conn, _make_position(symbol="NVDA"))
+    save_position(conn, _make_position(symbol="TSM"))
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert set(s.open_symbols) == {"NVDA", "TSM"}
+    assert s.trades_closed == 0
+
+
+def test_weekly_summary_counts_signals_in_window_only(conn):
+    log_event(conn, "NVDA", "signal")
+    log_event(conn, "AMD", "signal")
+    log_event(conn, "AMD", "approved")  # not a signal — must not count
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.signals == 2

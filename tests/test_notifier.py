@@ -22,12 +22,15 @@ from src.notifier import (
     _fmt_execution,
     _fmt_exit,
     _fmt_signal,
+    _fmt_weekly,
     listen_for_reply,
     send_error_alert,
     send_execution_alert,
     send_exit_alert,
     send_signal_alert,
+    send_weekly_summary,
 )
+from src.database import WeeklySummary
 from src.risk import Position
 from telegram.constants import ParseMode
 
@@ -59,6 +62,20 @@ def _mock_bot() -> MagicMock:
     bot.send_message = AsyncMock()
     bot.get_updates  = AsyncMock(return_value=[])
     return bot
+
+
+def _summary(**overrides) -> WeeklySummary:
+    base = dict(
+        period_start=date(2026, 6, 2),
+        period_end=date(2026, 6, 8),
+        trades_closed=0,
+        wins=0,
+        losses=0,
+        net_pnl_dollars=0.0,
+        open_symbols=[],
+        signals=0,
+    )
+    return WeeklySummary(**{**base, **overrides})
 
 
 def _mock_update(text: str, uid: int = 100) -> MagicMock:
@@ -308,3 +325,63 @@ class TestListenForReply:
         bot.get_updates  = AsyncMock(side_effect=[[], [no_msg, real]])
         with patch.object(notifier, "_bot", bot):
             assert listen_for_reply(30) is True
+
+
+# ---------------------------------------------------------------------------
+# _fmt_weekly + send_weekly_summary
+# ---------------------------------------------------------------------------
+
+class TestWeeklySummary:
+    def test_quiet_week_renders_running_and_zeros(self):
+        text = _fmt_weekly(_summary(), equity=100_000.0)
+        assert "✅ Running" in text
+        assert "$100,000.00" in text
+        assert "Open     : none" in text
+        assert "Closed   : 0 trades" in text
+        assert "Signals  : 0" in text
+
+    def test_active_week_shows_win_loss_and_net(self):
+        text = _fmt_weekly(
+            _summary(trades_closed=3, wins=2, losses=1, net_pnl_dollars=240.0,
+                     open_symbols=["NVDA", "AMD"], signals=4),
+            equity=101_240.0,
+        )
+        assert "NVDA, AMD" in text
+        assert "3 trades  (2W / 1L)  $+240.00" in text
+        assert "Signals  : 4" in text
+
+    def test_negative_net_pnl_keeps_sign(self):
+        text = _fmt_weekly(
+            _summary(trades_closed=1, wins=0, losses=1, net_pnl_dollars=-55.5),
+            equity=99_944.5,
+        )
+        assert "$-55.50" in text
+
+    def test_unavailable_equity_is_flagged(self):
+        text = _fmt_weekly(_summary(), equity=None)
+        assert "unavailable" in text
+
+    def test_same_month_header_drops_repeated_month(self):
+        text = _fmt_weekly(_summary(), equity=100_000.0)
+        assert "Jun 02–08" in text
+
+    def test_cross_month_header_keeps_both_months(self):
+        text = _fmt_weekly(
+            _summary(period_start=date(2026, 5, 28), period_end=date(2026, 6, 3)),
+            equity=100_000.0,
+        )
+        assert "May 28–Jun 03" in text
+
+    def test_send_weekly_summary_calls_send_message_html(self):
+        bot = _mock_bot()
+        with patch.object(notifier, "_bot", bot):
+            send_weekly_summary(_summary(), 100_000.0)
+        bot.send_message.assert_called_once()
+        assert bot.send_message.call_args.kwargs.get("parse_mode") == ParseMode.HTML
+
+    def test_send_weekly_summary_never_raises(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=Exception("Telegram down"))
+        bot.get_updates  = AsyncMock(return_value=[])
+        with patch.object(notifier, "_bot", bot):
+            send_weekly_summary(_summary(), None)   # must not raise
