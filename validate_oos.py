@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
-validate_oos.py — Statistical pressure-testing of OOS strategy results.
+validate_oos.py — Pressure-testing for the regime overlay.
 
-Three tests:
-  1. Walk-forward  — run frozen strategy on each calendar year independently
-                     to check regime consistency (no re-optimisation between years).
-  2. Permutation   — sign-randomise OOS trade P&Ls 10,000× to test whether
-                     the observed win rate is statistically above 50% (H₀: p=0.5).
-  3. Bootstrap CI  — resample OOS trade P&Ls with replacement 10,000× to
-                     report 90% confidence intervals on key metrics.
+The previous version tested discrete trade P&Ls (permutation on win rate,
+bootstrap CIs). The overlay does not produce independent trades — it produces an
+exposure path — so those tests do not apply. These three do, and they are the
+ones that decided the strategy:
+
+  1. Matched-exposure control — the overlay runs ~71% invested, so the fair null
+     is a portfolio held at a CONSTANT 71%, not buy & hold. Cash earns 0%, so
+     scaling by a constant leaves Sharpe unchanged; if the static control matches
+     the overlay, the timing machinery earns nothing. This is the test that
+     rejected volatility targeting.
+
+  2. Train/test split — an edge that only exists in the half containing the
+     crashes is regime dependence, not skill.
+
+  3. Block bootstrap on drawdown — resample 63-day blocks and ask how often the
+     overlay's drawdown is actually shallower. The point estimate alone cannot
+     distinguish a real effect from one lucky crash.
 
 Usage:
     python validate_oos.py
-    python validate_oos.py --oos-start 2025-01-01 --oos-end 2025-12-31
-    python validate_oos.py --permutations 5000
-    python validate_oos.py --no-walk-forward
-    python validate_oos.py --equity 50000
+    python validate_oos.py --split 2023-01-01
+    python validate_oos.py --resamples 5000
 """
 
 import argparse
@@ -28,385 +36,180 @@ import numpy as np
 import pandas as pd
 
 from src.config import settings
-from backtest import Trade, load_data, run_simulation
+from backtest import buy_and_hold, load_data, run_simulation, _px, _stats
 
 logging.basicConfig(level=logging.WARNING)
 
-# Earliest date for data fetch — covers 2019+ walk-forward windows with warm-up.
-# Alpaca SIP feed provides this depth; earlier dates may fail for some symbols.
-_DATA_START         = date(2018, 1, 1)
-_DEFAULT_OOS_START  = date(2025, 1, 1)
-_DEFAULT_OOS_END    = date(2025, 12, 31)
-_WALK_FORWARD_YEARS = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
-
-
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
-
-@dataclass
-class WalkForwardResult:
-    year:           int
-    n_trades:       int
-    win_rate_pct:   float
-    sharpe:         float
-    max_dd_pct:     float
-    net_return_pct: float
+_DATA_START = date(2018, 1, 1)
+_DEFAULT_START = date(2018, 11, 1)
+_DEFAULT_SPLIT = date(2023, 1, 1)
+_TRADING_DAYS = 252
+_BLOCK = 63          # one quarter — long enough to preserve drawdown structure
 
 
 @dataclass
-class PermutationResult:
-    n_trades:        int
-    actual_win_rate: float   # fraction, e.g. 0.76
-    p_value:         float
-    n_permutations:  int
-    null_p50:        float   # median of null distribution (should be ~0.50)
-    null_p95:        float   # 95th pct of null (upper tail of "expected by luck")
+class Row:
+    label: str
+    stats: dict
+    invested: float
 
 
-@dataclass
-class BootstrapCI:
-    metric: str
-    actual: float
-    p5:     float
-    p50:    float
-    p95:    float
-
-
-# ---------------------------------------------------------------------------
-# Shared helper
-# ---------------------------------------------------------------------------
-
-def _equity_stats(equity: pd.Series, initial: float) -> tuple[float, float, float]:
-    """Return (annualised_sharpe, max_dd_pct, net_return_pct) from daily equity series."""
-    if equity.empty:
-        return 0.0, 0.0, 0.0
-    net_return  = (equity.iloc[-1] - initial) / initial * 100
-    daily_ret   = equity.pct_change().dropna()
-    sharpe = (
-        float(daily_ret.mean() / daily_ret.std() * np.sqrt(252))
-        if len(daily_ret) > 1 and daily_ret.std() > 0 else 0.0
-    )
-    rolling_max = equity.cummax()
-    max_dd      = float(((equity - rolling_max) / rolling_max).min() * 100)
-    return round(sharpe, 3), round(max_dd, 2), round(float(net_return), 2)
-
-
-# ---------------------------------------------------------------------------
-# Test 1: Walk-Forward
-# ---------------------------------------------------------------------------
-
-def run_walk_forward(
-    data:           dict[str, pd.DataFrame],
+def run_static(
+    data: dict[str, pd.DataFrame],
+    start: date,
+    end: date,
     initial_equity: float,
-    years:          list[int],
-) -> list[WalkForwardResult]:
+    exposure: float,
+    *,
+    rebalance_days: int = 5,
+    cost_bps: float = 5.0,
+) -> pd.Series:
     """
-    Run the frozen strategy on each calendar year independently.
+    Hold every symbol at a constant `exposure` fraction, rest in cash.
 
-    Each year starts with `initial_equity` — years are not compounded.
-    Positions open at year-end are force-closed at the last available bar.
-    A year with no signals scores zero across all metrics.
+    This is the null hypothesis for any exposure-management strategy.
     """
-    results: list[WalkForwardResult] = []
+    symbols = sorted(data)
+    dates = sorted({d for df in data.values() for d in df.index if start <= d <= end})
+    cost = cost_bps / 10_000.0
+    cash = initial_equity
+    shares = {s: 0.0 for s in symbols}
+    curve: dict[date, float] = {}
 
-    for year in years:
-        start  = date(year, 1, 1)
-        end    = date(year, 12, 31)
-        trades, equity = run_simulation(data, start, end, initial_equity)
-        closed = [t for t in trades if t.exit_price is not None]
-
-        if not closed:
-            results.append(WalkForwardResult(year, 0, 0.0, 0.0, 0.0, 0.0))
-            continue
-
-        winners   = sum(1 for t in closed if t.pnl_dollars > 0)
-        win_rate  = winners / len(closed) * 100
-        sharpe, max_dd, net_ret = _equity_stats(equity, initial_equity)
-        results.append(WalkForwardResult(
-            year=year,
-            n_trades=len(closed),
-            win_rate_pct=round(win_rate, 1),
-            sharpe=sharpe,
-            max_dd_pct=max_dd,
-            net_return_pct=net_ret,
-        ))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Test 2: Permutation Test (sign randomisation)
-# ---------------------------------------------------------------------------
-
-def run_permutation_test(
-    trades:         list[Trade],
-    n_permutations: int = 10_000,
-    rng_seed:       int = 42,
-) -> PermutationResult | None:
-    """
-    Sign-randomisation test on trade P&L signs.
-
-    Null hypothesis: each trade is equally likely to be a win or a loss (p = 0.5).
-    Under H₀ we simulate the null distribution by randomly assigning +/- signs
-    to each trade 10,000 times and recording the resulting win rate.
-
-    p-value = fraction of permutations whose win rate ≥ actual win rate.
-
-    Note: magnitude of individual P&Ls does not affect win-rate significance —
-    only whether a trade was positive or negative. Profit factor and mean return
-    are addressed by the bootstrap.
-
-    Returns None if fewer than 5 closed trades (result would be meaningless).
-    """
-    closed = [t for t in trades if t.exit_price is not None]
-    if len(closed) < 5:
-        return None
-
-    pnls            = np.array([t.pnl_pct for t in closed])
-    actual_win_rate = float((pnls > 0).mean())
-
-    rng = np.random.default_rng(rng_seed)
-    # Shape: (n_permutations, n_trades). Each entry is +1 (win) or -1 (loss).
-    signs          = rng.choice([-1.0, 1.0], size=(n_permutations, len(pnls)))
-    null_win_rates = (signs > 0).mean(axis=1)
-
-    p_value = float((null_win_rates >= actual_win_rate).mean())
-
-    return PermutationResult(
-        n_trades=len(closed),
-        actual_win_rate=actual_win_rate,
-        p_value=p_value,
-        n_permutations=n_permutations,
-        null_p50=float(np.percentile(null_win_rates, 50)),
-        null_p95=float(np.percentile(null_win_rates, 95)),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test 3: Bootstrap Confidence Intervals
-# ---------------------------------------------------------------------------
-
-def run_bootstrap(
-    trades:       list[Trade],
-    n_iterations: int = 10_000,
-    rng_seed:     int = 42,
-) -> list[BootstrapCI] | None:
-    """
-    Bootstrap resampling of OOS trade P&L% values.
-
-    Draws N samples with replacement (N = actual trade count) n_iterations times.
-    Reports 5th / 50th / 95th percentiles on three metrics:
-
-      win_rate_%       — fraction of winning trades × 100
-      mean_trade_ret_% — average per-trade P&L %
-      profit_factor    — gross profit / gross loss (capped at 50 to handle inf)
-
-    Wide CI bands reveal low sample power — the honest cost of a short OOS window.
-    Returns None if fewer than 5 closed trades.
-    """
-    closed = [t for t in trades if t.exit_price is not None]
-    if len(closed) < 5:
-        return None
-
-    pnls = np.array([t.pnl_pct for t in closed])
-    n    = len(pnls)
-    rng  = np.random.default_rng(rng_seed)
-
-    # samples shape: (n_iterations, n_trades)
-    samples   = rng.choice(pnls, size=(n_iterations, n), replace=True)
-    win_rates = (samples > 0).mean(axis=1) * 100
-    mean_rets = samples.mean(axis=1)
-    wins_sum  = np.where(samples > 0, samples, 0.0).sum(axis=1)
-    loss_sum  = np.abs(np.where(samples < 0, samples, 0.0).sum(axis=1))
-    safe_loss = np.where(loss_sum > 0, loss_sum, 1.0)   # prevent division by zero
-    pf_dist   = np.clip(np.where(loss_sum > 0, wins_sum / safe_loss, 50.0), 0, 50)
-
-    def _actual_pf(p: np.ndarray) -> float:
-        w = p[p > 0].sum()
-        l = abs(p[p < 0].sum())
-        return min(w / l, 50.0) if l > 0 else 50.0
-
-    def _ci(name: str, actual: float, dist: np.ndarray) -> BootstrapCI:
-        return BootstrapCI(
-            metric=name,
-            actual=round(actual, 3),
-            p5=round(float(np.percentile(dist, 5)), 3),
-            p50=round(float(np.percentile(dist, 50)), 3),
-            p95=round(float(np.percentile(dist, 95)), 3),
+    for i, today in enumerate(dates):
+        if i % rebalance_days == 0:
+            live = [s for s in symbols if today in data[s].index]
+            equity = cash + sum(shares[s] * _px(data[s], today, "open") for s in live)
+            for s in live:
+                price = _px(data[s], today, "open")
+                if price <= 0:
+                    continue
+                want = (equity * exposure / len(symbols)) / price
+                delta = want - shares[s]
+                if abs(delta * price) < equity * 0.001:
+                    continue
+                cash -= delta * price * (1 + cost if delta > 0 else 1 - cost)
+                shares[s] = want
+        curve[today] = cash + sum(
+            shares[s] * _px(data[s], today, "close")
+            for s in symbols if today in data[s].index
         )
+    return pd.Series(curve)
 
-    return [
-        _ci("win_rate_%",        float((pnls > 0).mean() * 100), win_rates),
-        _ci("mean_trade_ret_%",  float(pnls.mean()),              mean_rets),
-        _ci("profit_factor",     _actual_pf(pnls),               pf_dist),
+
+def _max_dd(returns: np.ndarray) -> float:
+    eq = np.cumprod(1 + returns)
+    return float((eq / np.maximum.accumulate(eq) - 1).min())
+
+
+def block_bootstrap_drawdown(
+    overlay: pd.Series, benchmark: pd.Series, resamples: int, seed: int = 11,
+) -> float:
+    """Fraction of block resamples in which the overlay's drawdown is shallower."""
+    rng = np.random.default_rng(seed)
+    a = overlay.pct_change().dropna().to_numpy()
+    b = benchmark.pct_change().dropna().to_numpy()
+    n = min(len(a), len(b))
+    a, b = a[-n:], b[-n:]
+    if n <= _BLOCK:
+        return float("nan")
+
+    wins = 0
+    for _ in range(resamples):
+        starts = rng.integers(0, n - _BLOCK, size=max(1, n // _BLOCK))
+        idx = np.concatenate([np.arange(s, s + _BLOCK) for s in starts])
+        if _max_dd(a[idx]) > _max_dd(b[idx]):
+            wins += 1
+    return wins / resamples
+
+
+def evaluate_window(
+    data: dict[str, pd.DataFrame], start: date, end: date, equity: float, band: float,
+) -> tuple[list[Row], pd.Series, pd.Series]:
+    """Run overlay, matched-exposure static control, and buy & hold over one window."""
+    result = run_simulation(
+        data, start, end, equity, band=band, rebalance_days=5, cost_bps=5.0)
+    exposure = result.invested_pct / 100.0
+    static = run_static(data, start, end, equity, exposure)
+    bench = buy_and_hold(data, start, end, equity)
+
+    rows = [
+        Row("buy & hold", _stats(bench, equity), 100.0),
+        Row(f"STATIC {exposure:.0%} (matched)", _stats(static, equity), exposure * 100),
+        Row("regime overlay", _stats(result.equity, equity), result.invested_pct),
     ]
+    return rows, result.equity, bench
 
 
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
+def print_window(label: str, rows: list[Row]) -> None:
+    print(f"\n--- {label} ---")
+    print(f"  {'design':<28}{'CAGR%':>9}{'Sharpe':>9}{'maxDD%':>9}{'MAR':>7}{'invested%':>11}")
+    for r in rows:
+        if not r.stats:
+            continue
+        s = r.stats
+        print(f"  {r.label:<28}{s['cagr']:>8.2f}%{s['sharpe']:>9.2f}"
+              f"{s['max_dd']:>8.2f}%{s['mar']:>7.2f}{r.invested:>10.1f}%")
 
-def _p_value_label(p: float) -> str:
-    if p < 0.01:
-        return "strong evidence of edge (p < 0.01)"
-    if p < 0.05:
-        return "significant (p < 0.05)"
-    if p < 0.10:
-        return "marginal (p < 0.10) — treat with caution"
-    return "NOT significant (p >= 0.10) — may be luck"
-
-
-def _wf_summary(results: list[WalkForwardResult]) -> str:
-    with_trades    = [r for r in results if r.n_trades > 0]
-    profitable     = [r for r in with_trades if r.net_return_pct > 0]
-    positive_sharpe = [r for r in with_trades if r.sharpe > 0]
-    if not with_trades:
-        return "no years with trades"
-    return (
-        f"profitable in {len(profitable)}/{len(with_trades)} years with trades  |  "
-        f"positive Sharpe in {len(positive_sharpe)}/{len(with_trades)}"
-    )
-
-
-def print_report(
-    oos_trades:     list[Trade],
-    oos_equity:     pd.Series,
-    wf_results:     list[WalkForwardResult] | None,
-    perm:           PermutationResult | None,
-    bootstrap:      list[BootstrapCI] | None,
-    oos_start:      date,
-    oos_end:        date,
-    initial_equity: float,
-) -> None:
-    W = 68
-    closed = [t for t in oos_trades if t.exit_price is not None]
-
-    print("\n" + "=" * W)
-    print("  OOS STATISTICAL VALIDATION REPORT")
-    print(f"  OOS window : {oos_start}  →  {oos_end}")
-    print("=" * W)
-
-    # --- OOS summary ----------------------------------------------------------
-    if not closed:
-        print("\n  No OOS trades executed — cannot run statistical tests.")
-        print("=" * W + "\n")
-        return
-
-    winners      = sum(1 for t in closed if t.pnl_dollars > 0)
-    oos_win_rate = winners / len(closed) * 100
-    sharpe, max_dd, net_ret = _equity_stats(oos_equity, initial_equity)
-
-    print(f"\n  OOS completed trades : {len(closed)}")
-    print(f"  OOS win rate         : {oos_win_rate:.1f}%")
-    print(f"  OOS net return       : {net_ret:+.2f}%")
-    print(f"  OOS Sharpe           : {sharpe:.3f}")
-    print(f"  OOS max drawdown     : {max_dd:.2f}%")
-
-    # --- Walk-forward ---------------------------------------------------------
-    if wf_results:
-        print("\n" + "-" * W)
-        print("  WALK-FORWARD  (frozen strategy, each year independently)")
-        print(f"  {'Year':<8}{'Trades':>8}{'Win%':>8}{'Sharpe':>10}{'MaxDD%':>10}{'Return%':>10}")
-        print("  " + "-" * 54)
-        for r in wf_results:
-            if r.n_trades == 0:
-                print(f"  {r.year:<8}{'—':>8}{'—':>8}{'—':>10}{'—':>10}{'—':>10}  (no signals)")
-                continue
-            flag = "  <-- OOS" if r.year == oos_start.year else ""
-            print(
-                f"  {r.year:<8}{r.n_trades:>8}{r.win_rate_pct:>7.1f}%"
-                f"{r.sharpe:>10.3f}{r.max_dd_pct:>9.2f}%{r.net_return_pct:>9.2f}%{flag}"
-            )
-        print(f"\n  Summary: {_wf_summary(wf_results)}")
-
-    # --- Permutation test -----------------------------------------------------
-    print("\n" + "-" * W)
-    if perm:
-        print("  PERMUTATION TEST  (sign randomisation, H₀: win rate = 50%)")
-        print(f"  Permutations         : {perm.n_permutations:,}")
-        print(f"  Actual win rate      : {perm.actual_win_rate:.1%}")
-        print(f"  Null distribution    : median {perm.null_p50:.1%}  |  p95 {perm.null_p95:.1%}")
-        print(f"  p-value              : {perm.p_value:.4f}")
-        print(f"  Verdict              : {_p_value_label(perm.p_value)}")
-        print()
-        if perm.n_trades < 20:
-            print(f"  ⚠  Only {perm.n_trades} trades — even a significant p-value has wide error bars.")
-            print(f"     A single lucky streak in {perm.n_trades} trades can produce p < 0.05.")
-    else:
-        print("  PERMUTATION TEST  — skipped (fewer than 5 OOS trades).")
-
-    # --- Bootstrap CIs --------------------------------------------------------
-    print("\n" + "-" * W)
-    if bootstrap:
-        print("  BOOTSTRAP 90% CONFIDENCE INTERVALS  (10,000 resamples)")
-        print(f"  {'Metric':<24}{'Actual':>10}{'p5':>10}{'p50':>10}{'p95':>10}")
-        print("  " + "-" * 54)
-        for ci in bootstrap:
-            print(
-                f"  {ci.metric:<24}{ci.actual:>10.3f}"
-                f"{ci.p5:>10.3f}{ci.p50:>10.3f}{ci.p95:>10.3f}"
-            )
-        print()
-        print("  Interpretation:")
-        print("  • Narrow bands = reliable estimate.  Wide bands = small sample, high uncertainty.")
-        wr_ci = next((c for c in bootstrap if c.metric == "win_rate_%"), None)
-        if wr_ci and wr_ci.p5 < 50.0:
-            print(f"  ⚠  p5 win rate {wr_ci.p5:.1f}% < 50% — on an unlucky run the edge disappears.")
-        elif wr_ci:
-            print(f"  ✓  p5 win rate {wr_ci.p5:.1f}% > 50% — edge persists even on unlucky resamples.")
-    else:
-        print("  BOOTSTRAP CI — skipped (fewer than 5 OOS trades).")
-
-    print("=" * W + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Statistical OOS validation for the swing strategy")
-    p.add_argument("--oos-start",       default="2025-01-01", help="OOS start date YYYY-MM-DD")
-    p.add_argument("--oos-end",         default="2025-12-31", help="OOS end date   YYYY-MM-DD")
-    p.add_argument("--equity",          type=float, default=100_000.0, help="Starting equity (default: 100000)")
-    p.add_argument("--permutations",    type=int,   default=10_000,    help="Permutation test iterations (default: 10000)")
-    p.add_argument("--no-walk-forward", action="store_true",           help="Skip walk-forward (faster)")
+    p = argparse.ArgumentParser(description="Regime overlay validation")
+    p.add_argument("--start", default=_DEFAULT_START.isoformat())
+    p.add_argument("--end", default=date.today().isoformat())
+    p.add_argument("--split", default=_DEFAULT_SPLIT.isoformat(),
+                   help="Train/test boundary (default 2023-01-01)")
+    p.add_argument("--equity", type=float, default=100_000.0)
+    p.add_argument("--band", type=float, default=None)
+    p.add_argument("--resamples", type=int, default=2000)
     return p.parse_args()
 
 
 def main() -> None:
-    args      = _parse_args()
-    oos_start = date.fromisoformat(args.oos_start)
-    oos_end   = date.fromisoformat(args.oos_end)
-    equity    = args.equity
+    args = _parse_args()
+    start = date.fromisoformat(args.start)
+    end = date.fromisoformat(args.end)
+    split = date.fromisoformat(args.split)
+    band = args.band if args.band is not None else settings.sma_band
 
-    print(f"\nOOS Statistical Validation")
-    print(f"  OOS window : {oos_start}  →  {oos_end}")
-    print(f"  Symbols    : {', '.join(settings.symbols)}")
-    print(f"  Equity     : ${equity:,.0f}\n")
+    print("\nRegime Overlay Validation")
+    print(f"  Period  : {start} → {end}   (split {split})")
+    print(f"  Symbols : {', '.join(settings.symbols)}")
+    print(f"  Band    : {band:.1%}\n")
+    print("Loading data:")
 
-    print("Loading data (from 2018 for walk-forward warm-up):")
-    data = load_data(list(settings.symbols), _DATA_START, oos_end)
+    data = load_data(list(settings.symbols), _DATA_START, end)
     if not data:
         print("ERROR: no data loaded. Check .env and Alpaca subscription.")
         sys.exit(1)
 
-    print("\nRunning OOS simulation...", flush=True)
-    oos_trades, oos_equity = run_simulation(data, oos_start, oos_end, equity)
+    print("\n" + "=" * 78)
+    print("  1 + 2.  MATCHED-EXPOSURE CONTROL, ACROSS TRAIN / TEST")
+    print("=" * 78)
 
-    wf_results: list[WalkForwardResult] | None = None
-    if not args.no_walk_forward:
-        print("Running walk-forward analysis...", flush=True)
-        wf_results = run_walk_forward(data, equity, _WALK_FORWARD_YEARS)
+    windows = [("full", start, end), ("train", start, split), ("test", split, end)]
+    curves: dict[str, tuple[pd.Series, pd.Series]] = {}
+    for label, w_start, w_end in windows:
+        rows, overlay_curve, bench_curve = evaluate_window(
+            data, w_start, w_end, args.equity, band)
+        print_window(f"{label}  ({w_start} → {w_end})", rows)
+        curves[label] = (overlay_curve, bench_curve)
 
-    print("Running permutation test...", flush=True)
-    perm = run_permutation_test(oos_trades, n_permutations=args.permutations)
+    print("\n" + "=" * 78)
+    print(f"  3.  BLOCK BOOTSTRAP ON DRAWDOWN  ({args.resamples} resamples, "
+          f"{_BLOCK}-day blocks)")
+    print("=" * 78)
+    for label, (overlay_curve, bench_curve) in curves.items():
+        frac = block_bootstrap_drawdown(overlay_curve, bench_curve, args.resamples)
+        print(f"  {label:<8} overlay drawdown shallower in {frac:>6.1%} of resamples")
 
-    print("Running bootstrap CI...", flush=True)
-    bootstrap = run_bootstrap(oos_trades)
-
-    print_report(oos_trades, oos_equity, wf_results, perm, bootstrap, oos_start, oos_end, equity)
+    print("\n" + "=" * 78)
+    print("  HOW TO READ THIS")
+    print("=" * 78)
+    print("  The overlay EARNS its complexity only if it beats the matched STATIC")
+    print("  control — not buy & hold — on drawdown and MAR, in BOTH halves.")
+    print("  Expect no Sharpe advantage in the test half; that is a known limit,")
+    print("  not a regression. A bootstrap figure near 50% would mean the drawdown")
+    print("  reduction is noise.\n")
 
 
 if __name__ == "__main__":

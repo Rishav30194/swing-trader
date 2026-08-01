@@ -14,13 +14,14 @@ from datetime import timedelta
 
 from src.database import (
     init_db,
-    save_position,
-    update_position,
-    get_open_positions,
+    get_regime_states,
+    get_strategy_cash,
     get_weekly_summary,
     log_event,
+    log_rebalance_order,
+    set_regime_state,
+    set_strategy_cash,
 )
-from src.risk import Position
 
 
 # ---------------------------------------------------------------------------
@@ -35,20 +36,6 @@ def conn():
     c.close()
 
 
-def _make_position(**overrides) -> Position:
-    defaults = dict(
-        symbol="NVDA",
-        entry_price=500.0,
-        shares=10,
-        stop_loss=492.5,
-        trailing_stop=492.5,
-        take_profit=510.0,
-        entry_date=date(2024, 3, 1),
-    )
-    defaults.update(overrides)
-    return Position(**defaults)
-
-
 # ---------------------------------------------------------------------------
 # init_db
 # ---------------------------------------------------------------------------
@@ -58,7 +45,7 @@ def test_init_db_creates_tables(conn):
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    assert "positions" in tables
+    assert "sleeves" in tables
     assert "trade_log" in tables
 
 
@@ -74,142 +61,6 @@ def test_init_db_idempotent():
         c2.close()
     finally:
         os.unlink(path)
-
-
-# ---------------------------------------------------------------------------
-# save_position
-# ---------------------------------------------------------------------------
-
-def test_save_position_returns_integer_id(conn):
-    pos = _make_position()
-    db_id = save_position(conn, pos)
-    assert isinstance(db_id, int)
-    assert db_id >= 1
-
-
-def test_save_position_persists_all_fields(conn):
-    pos = _make_position(symbol="AAPL", entry_price=175.5, shares=5)
-    db_id = save_position(conn, pos)
-
-    row = conn.execute("SELECT * FROM positions WHERE id = ?", (db_id,)).fetchone()
-    assert row["symbol"]       == "AAPL"
-    assert row["entry_price"]  == pytest.approx(175.5)
-    assert row["shares"]       == 5
-    assert row["stop_loss"]    == pytest.approx(pos.stop_loss)
-    assert row["trailing_stop"] == pytest.approx(pos.trailing_stop)
-    assert row["take_profit"]  == pytest.approx(pos.take_profit)
-    assert row["entry_date"]   == pos.entry_date.isoformat()
-    assert row["status"]       == "open"
-
-
-def test_save_position_initial_status_is_open(conn):
-    db_id = save_position(conn, _make_position())
-    row = conn.execute("SELECT status FROM positions WHERE id = ?", (db_id,)).fetchone()
-    assert row["status"] == "open"
-
-
-def test_save_multiple_positions(conn):
-    id1 = save_position(conn, _make_position(symbol="NVDA"))
-    id2 = save_position(conn, _make_position(symbol="AAPL"))
-    assert id1 != id2
-    count = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
-    assert count == 2
-
-
-# ---------------------------------------------------------------------------
-# update_position
-# ---------------------------------------------------------------------------
-
-def test_update_trailing_stop(conn):
-    db_id = save_position(conn, _make_position(trailing_stop=492.5))
-    update_position(conn, db_id, trailing_stop=497.0)
-    row = conn.execute("SELECT trailing_stop FROM positions WHERE id = ?", (db_id,)).fetchone()
-    assert row["trailing_stop"] == pytest.approx(497.0)
-
-
-def test_update_status_to_closed(conn):
-    db_id = save_position(conn, _make_position())
-    update_position(conn, db_id, status="closed", exit_price=510.0, exit_reason="tp",
-                    pnl_dollars=100.0, pnl_pct=2.0, exit_date="2024-03-06")
-    row = conn.execute("SELECT * FROM positions WHERE id = ?", (db_id,)).fetchone()
-    assert row["status"]       == "closed"
-    assert row["exit_price"]   == pytest.approx(510.0)
-    assert row["exit_reason"]  == "tp"
-    assert row["pnl_dollars"]  == pytest.approx(100.0)
-    assert row["exit_date"]    == "2024-03-06"
-
-
-def test_update_raises_on_unknown_column(conn):
-    db_id = save_position(conn, _make_position())
-    with pytest.raises(ValueError, match="unknown column"):
-        update_position(conn, db_id, nonexistent_column=99)
-
-
-def test_update_raises_on_empty_fields(conn):
-    db_id = save_position(conn, _make_position())
-    with pytest.raises(ValueError, match="at least one field"):
-        update_position(conn, db_id)
-
-
-def test_update_only_affects_target_row(conn):
-    id1 = save_position(conn, _make_position(symbol="NVDA", trailing_stop=492.5))
-    id2 = save_position(conn, _make_position(symbol="AAPL", trailing_stop=170.0))
-    update_position(conn, id1, trailing_stop=498.0)
-
-    row2 = conn.execute("SELECT trailing_stop FROM positions WHERE id = ?", (id2,)).fetchone()
-    assert row2["trailing_stop"] == pytest.approx(170.0)  # unchanged
-
-
-# ---------------------------------------------------------------------------
-# get_open_positions
-# ---------------------------------------------------------------------------
-
-def test_get_open_positions_returns_empty_list_when_none(conn):
-    assert get_open_positions(conn) == []
-
-
-def test_get_open_positions_returns_open_rows(conn):
-    save_position(conn, _make_position(symbol="NVDA"))
-    save_position(conn, _make_position(symbol="AAPL"))
-    positions = get_open_positions(conn)
-    assert len(positions) == 2
-    symbols = {p.symbol for p in positions}
-    assert symbols == {"NVDA", "AAPL"}
-
-
-def test_get_open_positions_excludes_closed(conn):
-    db_id = save_position(conn, _make_position(symbol="NVDA"))
-    save_position(conn, _make_position(symbol="AAPL"))
-    update_position(conn, db_id, status="closed", exit_price=510.0, exit_reason="tp",
-                    pnl_dollars=100.0, pnl_pct=2.0, exit_date="2024-03-06")
-
-    positions = get_open_positions(conn)
-    assert len(positions) == 1
-    assert positions[0].symbol == "AAPL"
-
-
-def test_get_open_positions_populates_db_id(conn):
-    db_id = save_position(conn, _make_position())
-    positions = get_open_positions(conn)
-    assert positions[0].db_id == db_id
-
-
-def test_get_open_positions_restores_all_fields(conn):
-    original = _make_position(
-        symbol="MSFT", entry_price=420.0, shares=3,
-        stop_loss=411.0, trailing_stop=411.0, take_profit=436.0,
-        entry_date=date(2024, 4, 15),
-    )
-    save_position(conn, original)
-    restored = get_open_positions(conn)[0]
-
-    assert restored.symbol        == original.symbol
-    assert restored.entry_price   == pytest.approx(original.entry_price)
-    assert restored.shares        == original.shares
-    assert restored.stop_loss     == pytest.approx(original.stop_loss)
-    assert restored.trailing_stop == pytest.approx(original.trailing_stop)
-    assert restored.take_profit   == pytest.approx(original.take_profit)
-    assert restored.entry_date    == original.entry_date
 
 
 # ---------------------------------------------------------------------------
@@ -256,61 +107,135 @@ def test_log_multiple_events(conn):
 # get_weekly_summary
 # ---------------------------------------------------------------------------
 
-def _close_position(conn, *, symbol: str, pnl: float, exit_date: date) -> None:
-    """Insert a position and immediately mark it closed with the given P&L."""
-    db_id = save_position(conn, _make_position(symbol=symbol))
-    update_position(
-        conn, db_id,
-        status="closed",
-        exit_date=exit_date.isoformat(),
-        exit_price=510.0,
-        exit_reason="tp",
-        pnl_dollars=pnl,
-        pnl_pct=pnl / 10,
-    )
-
-
 def test_weekly_summary_empty_db(conn):
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert s.trades_closed == 0
-    assert s.wins == 0 and s.losses == 0
-    assert s.net_pnl_dollars == 0.0
-    assert s.open_symbols == []
-    assert s.signals == 0
+    assert s.sleeves_on == [] and s.sleeves_off == []
+    assert s.orders_filled == 0 and s.orders_failed == 0
+    assert s.notional_bought == 0.0 and s.notional_sold == 0.0
     assert s.period_end == date.today()
 
 
-def test_weekly_summary_counts_wins_losses_and_net(conn):
-    today = date.today()
-    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
-    _close_position(conn, symbol="AMD",  pnl=-40.0, exit_date=today - timedelta(days=2))
-    s = get_weekly_summary(conn, today - timedelta(days=7))
-    assert s.trades_closed == 2
-    assert s.wins == 1
-    assert s.losses == 1
-    assert s.net_pnl_dollars == pytest.approx(80.0)
-
-
-def test_weekly_summary_excludes_trades_before_window(conn):
-    today = date.today()
-    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
-    _close_position(conn, symbol="AMD",  pnl=999.0, exit_date=today - timedelta(days=30))
-    s = get_weekly_summary(conn, today - timedelta(days=7))
-    assert s.trades_closed == 1
-    assert s.net_pnl_dollars == pytest.approx(120.0)
-
-
-def test_weekly_summary_reports_open_symbols(conn):
-    save_position(conn, _make_position(symbol="NVDA"))
-    save_position(conn, _make_position(symbol="TSM"))
+def test_weekly_summary_splits_sleeves_by_regime(conn):
+    set_regime_state(conn, "NVDA", True)
+    set_regime_state(conn, "MSFT", True)
+    set_regime_state(conn, "ASML", False)
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert set(s.open_symbols) == {"NVDA", "TSM"}
-    assert s.trades_closed == 0
+    assert s.sleeves_on == ["MSFT", "NVDA"]
+    assert s.sleeves_off == ["ASML"]
 
 
-def test_weekly_summary_counts_signals_in_window_only(conn):
-    log_event(conn, "NVDA", "signal")
-    log_event(conn, "AMD", "signal")
-    log_event(conn, "AMD", "approved")  # not a signal — must not count
+def test_weekly_summary_counts_filled_and_failed(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    log_rebalance_order(conn, "AMD", "sell", 60.0, "regime_exit", "filled")
+    log_rebalance_order(conn, "TSM", "buy", 90.0, "regime_entry", "failed")
+    log_rebalance_order(conn, "VOO", "buy", 40.0, "drift", "skipped")
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert s.signals == 2
+    assert s.orders_filled == 2
+    assert s.orders_failed == 1
+
+
+def test_weekly_summary_sums_notional_by_side_for_fills_only(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    log_rebalance_order(conn, "MSFT", "buy", 75.0, "drift", "filled")
+    log_rebalance_order(conn, "AMD", "sell", 60.0, "regime_exit", "filled")
+    log_rebalance_order(conn, "TSM", "buy", 999.0, "regime_entry", "failed")
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.notional_bought == pytest.approx(200.0)
+    assert s.notional_sold == pytest.approx(60.0)
+
+
+def test_weekly_summary_excludes_orders_before_window(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    conn.execute(
+        "UPDATE rebalance_log SET timestamp = ? WHERE symbol = 'NVDA'",
+        ((date.today() - timedelta(days=30)).isoformat(),),
+    )
+    conn.commit()
+    log_rebalance_order(conn, "MSFT", "buy", 75.0, "regime_entry", "filled")
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.orders_filled == 1
+    assert s.notional_bought == pytest.approx(75.0)
+
+
+# ---------------------------------------------------------------------------
+# Sleeve regime state
+# ---------------------------------------------------------------------------
+
+def test_get_regime_states_empty_by_default(conn):
+    assert get_regime_states(conn) == {}
+
+
+def test_set_and_get_regime_state(conn):
+    set_regime_state(conn, "NVDA", True, last_close=204.12, last_sma_200=203.5)
+    assert get_regime_states(conn) == {"NVDA": True}
+
+
+def test_set_regime_state_upserts_rather_than_duplicating(conn):
+    set_regime_state(conn, "NVDA", True)
+    set_regime_state(conn, "NVDA", False)
+    states = get_regime_states(conn)
+    assert states == {"NVDA": False}
+    assert conn.execute("SELECT COUNT(*) FROM sleeves").fetchone()[0] == 1
+
+
+def test_regime_state_persists_decision_inputs(conn):
+    set_regime_state(conn, "NVDA", True, last_close=204.12, last_sma_200=203.5)
+    row = conn.execute("SELECT * FROM sleeves WHERE symbol = 'NVDA'").fetchone()
+    assert row["last_close"] == pytest.approx(204.12)
+    assert row["last_sma_200"] == pytest.approx(203.5)
+
+
+# ---------------------------------------------------------------------------
+# rebalance_log
+# ---------------------------------------------------------------------------
+
+def test_log_rebalance_order_writes_row(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled",
+                        order_id="abc-123", detail={"filled_avg_price": 204.0})
+    row = conn.execute("SELECT * FROM rebalance_log").fetchone()
+    assert row["symbol"] == "NVDA"
+    assert row["side"] == "buy"
+    assert row["notional"] == pytest.approx(125.0)
+    assert row["status"] == "filled"
+    assert row["order_id"] == "abc-123"
+
+
+def test_log_rebalance_order_serialises_detail_as_json(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 1.0, "drift", "failed",
+                        detail={"error": "rejected"})
+    row = conn.execute("SELECT detail FROM rebalance_log").fetchone()
+    assert json.loads(row["detail"]) == {"error": "rejected"}
+
+
+def test_log_rebalance_order_allows_null_detail(conn):
+    log_rebalance_order(conn, "NVDA", "sell", 1.0, "regime_exit", "skipped")
+    assert conn.execute("SELECT detail FROM rebalance_log").fetchone()["detail"] is None
+
+
+# ---------------------------------------------------------------------------
+# Strategy cash ledger
+# ---------------------------------------------------------------------------
+
+def test_strategy_cash_seeds_from_the_allocation(conn):
+    assert get_strategy_cash(conn, 1_000.0) == pytest.approx(1_000.0)
+
+
+def test_strategy_cash_persists_the_seed(conn):
+    get_strategy_cash(conn, 1_000.0)
+    assert get_strategy_cash(conn, 999_999.0) == pytest.approx(1_000.0)
+
+
+def test_set_strategy_cash_round_trips(conn):
+    set_strategy_cash(conn, 875.0)
+    assert get_strategy_cash(conn, 1_000.0) == pytest.approx(875.0)
+
+
+def test_set_strategy_cash_upserts(conn):
+    set_strategy_cash(conn, 100.0)
+    set_strategy_cash(conn, 200.0)
+    assert conn.execute("SELECT COUNT(*) FROM strategy_state").fetchone()[0] == 1
+
+
+def test_strategy_cash_never_stored_negative(conn):
+    set_strategy_cash(conn, -50.0)
+    assert get_strategy_cash(conn, 1_000.0) == pytest.approx(0.0)

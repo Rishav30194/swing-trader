@@ -1,184 +1,191 @@
 # Claude Agent Instructions — Swing Trader
 
-This file is the primary context document for any Claude Code CLI session
-working on this project. Read this file first before reading or writing any code.
+Read this before touching any code. Then read `README.md` for what the app is
+and `docs/architecture.md` for how it is built.
 
 ---
 
-## Project Context
+## Status
 
-This is a personal automated swing-trading application. Read these docs in order:
+Built and tested. **Not deployed and holding no money.** There is no server to
+update and no live position to protect.
 
-1. `docs/project_overview.md` — what the system does and why
-2. `docs/architecture.md` — how it is structured
-3. `docs/implementation_phases.md` — where we are and what is next
-
-The current phase is tracked in `implementation_phases.md` by checked boxes.
-Before writing any code, locate the current phase and understand what the
-immediate next unchecked task is.
+The README states plainly that buying the 8 stocks and leaving them alone beat
+this app over 2018–2026. That is not a bug to be fixed by tuning — it is the
+measured result, and it must stay in the README.
 
 ---
 
-## Git Workflow
+## The strategy
+
+Equal-weight 8 symbols. Each sleeve is either fully on or fully off, decided per
+symbol by a hysteresis band around its own 200-day SMA:
+
+- held, and close < 0.98 × SMA_200 → exit that sleeve (weight 0)
+- flat, and close > 1.02 × SMA_200 → enter that sleeve (weight 1/N)
+- otherwise → keep the current state
+
+Rebalance **weekly**, on completed daily bars. Cash sits idle when sleeves are
+off (~26% of the time).
+
+**This is a drawdown-control device, not an alpha strategy.** It reduces the
+worst peak-to-trough loss by roughly half and gives up return to do it. It has
+no out-of-sample risk-adjusted advantage and beat buy-and-hold in only 2 of 9
+calendar years. Do not describe it as market-beating, and do not re-tune it
+toward higher returns — drawdown reduction is the only effect that held up
+across four different universes.
+
+**This targets a general TAXABLE account.** Every sell realises a capital gain.
+Any change that increases turnover must be argued on after-tax terms.
+`DRIFT_TOLERANCE` (default 5%) is effectively a tax dial: at 0.1% drift trades
+were 94% of all orders and bought nothing.
+
+---
+
+## Git workflow
 
 All work goes through feature branches. Never commit directly to `main`.
 
-Before starting any coding task, create a branch:
 ```
 git checkout main && git pull
 git checkout -b feature/<short-description>   # or fix/ or chore/
 ```
 
-Open a PR to merge back into `main` when the task is complete.
+Open a PR to merge back. Commit messages: short imperative subject, no period.
+**Do not add Co-Authored-By trailers.**
 
 ---
 
-## How to Work With Me
+## How to work with me
 
-### Always Present a Plan Before Writing Code
+### Present a plan before writing code
 
-Before implementing anything non-trivial, output a short plan:
-- What file(s) you will create or modify
-- What the function signatures will look like
-- Any trade-offs or risks in the approach
+For anything non-trivial, output a short plan first — files to touch, function
+signatures, trade-offs — and wait for `proceed` or `yes`. Typos and missing
+imports you may just fix.
 
-Wait for a `proceed` or `yes` reply before writing code. For tiny changes
-(fixing a typo, adding a missing import), you may proceed directly.
+### Ask, don't assume
 
-### Ask, Don't Assume
+If a requirement is ambiguous, ask one targeted question. Never assume a default
+that could result in an order being placed without explicit human intent.
 
-If a requirement is ambiguous, ask one targeted question. Do not make
-assumptions that affect correctness, risk management, or money movement.
-Specifically: never assume a default that could result in an order being
-placed without explicit human intent.
+### Minimal diffs
 
-### Minimal Diffs
+Change only what the task needs. Do not refactor unrelated code or add features
+not asked for. Scope creep in a financial system introduces bugs.
 
-Change only what is needed for the current task. Do not refactor unrelated
-code, rename things for style preferences, or add features not in the
-current phase. Scope creep in a financial system introduces bugs.
-
-### Confirm Before Touching Sensitive Areas
+### Confirm before touching sensitive areas
 
 Require explicit confirmation before modifying:
-- `executor.py` — any function that places orders
-- `config.py` — any change to how API credentials are loaded
-- `.env` — never suggest writing secrets to this file; instruct the user to do it manually
-- `database.py` — schema migrations (existing data may be lost)
-- `main.py` — the scheduler loop (changes affect live behavior)
+- `executor.py` — anything that places orders
+- `config.py` — credential loading
+- `.env` — never write to it; instruct the user to edit it manually
+- `database.py` — schema changes
+- `main.py` — the rebalance flow
 
 ---
 
-## Coding Standards
+## Risk guardrails (hard rules)
 
-### Python Style
-- Python 3.12+. Use type hints on all function signatures.
-- `dataclasses` for structured data (positions, signal results, settings).
+Never violate these, regardless of what I ask in the moment. If I ask you to
+bypass one, refuse and explain why.
+
+1. **Never place a live order when `ALPACA_PAPER=true`.**
+   The executor checks this env var on every order call, not just at startup.
+
+2. **Never place an order without validated target weights.**
+   `compute_target_weights()` must run and `validate_target_weights()` must pass
+   first. The SMA-200 band *is* the risk control — there is no per-trade
+   stop-loss. A sleeve whose regime is False must have a target weight of
+   exactly 0.
+
+3. **Exposure reductions execute immediately and unconditionally.**
+   Any order that *reduces* exposure must execute without human approval and
+   without depending on Telegram succeeding. Only *increases* require the weekly
+   YES. On timeout, reductions still execute and increases are skipped.
+
+4. **Position size comes from STRATEGY capital, not the account balance.**
+   Sizing uses `compute_strategy_equity()` — managed sleeve value plus the
+   strategy's own cash ledger, seeded from `TRADING_CAPITAL`. A $100,000 account
+   must still trade the $1,000 allocated to it. Never size off
+   `get_account_equity()` directly; account equity and cash are ceilings only.
+   `TRADING_CAPITAL` is required — the app must refuse to start rather than
+   guess how much money to deploy.
+
+5. **One sleeve per symbol, each capped at `MAX_POSITION_PCT`.**
+   Never hold a symbol outside `SYMBOLS`, never open a second sleeve in the same
+   symbol, never let a target notional exceed `MAX_POSITION_PCT × equity`.
+
+6. **Never modify `ALPACA_PAPER` or API credentials programmatically.**
+   Only the user changes those, by hand, in `.env`.
+
+7. **A rebalance must never leave the portfolio partially applied silently.**
+   If an order fails, log it, alert via Telegram, and record what succeeded.
+   Never assume the target state was reached — always re-derive holdings from
+   Alpaca on the next run.
+
+---
+
+## Coding standards
+
+### Python
+- Python 3.12+. Type hints on all function signatures.
+- `dataclasses` for structured data.
 - No global mutable state. Pass dependencies explicitly.
-- Functions should do one thing. If a function needs a comment to explain
-  what it does, it should probably be split.
-- Maximum function length: ~40 lines. Beyond that, decompose.
+- Functions do one thing. Max ~40 lines; beyond that, decompose.
+- `logging`, never `print()`. Console and `logs/app.log`.
 
-### Error Handling
-- Never silently swallow exceptions in the trading loop.
-- Network errors (Alpaca API, Telegram) must be caught, logged, and alerted.
-- A failed data fetch must skip that symbol, not crash the entire scan.
-- A failed order placement must alert via Telegram immediately.
-- Use `logging` (stdlib), not `print()`. Log to both console and `logs/app.log`.
+### Errors
+- Never silently swallow exceptions in the rebalance path.
+- Network errors must be caught, logged, and alerted.
+- A failed data fetch skips that symbol — it must never liquidate the sleeve.
+- A failed order must alert via Telegram immediately.
 
 ### Configuration
 - All parameters come from `config.py` / `.env`. No magic numbers in logic files.
-- Strategy thresholds (RSI level, EMA proximity %, ATR multipliers) must be
-  configurable via env vars without touching code.
+- Strategy thresholds must be configurable without touching code.
 
 ### Testing
-- Every function in `indicators.py`, `signals.py`, and `risk.py` must have
-  a unit test in `tests/`.
-- Tests must not make real API calls. Mock Alpaca responses.
-- A test that passes with fake data but would fail with real data is worse
-  than no test.
+- Every function in `indicators.py`, `portfolio.py`, `data.py` and the
+  orchestration in `main.py` must have unit tests.
+- No real API calls in tests. Mock Alpaca and Telegram.
+- Test the failure modes, not the happy path: unfilled orders, partial fills,
+  Telegram unreachable during a sell, data outages, approval timeouts.
+- A test that passes with fake data but would fail with real data is worse than
+  no test.
 
 ---
 
-## Risk Management Guardrails (Hard Rules)
-
-These rules must never be violated by generated code, regardless of what
-I ask in the moment. If I ask you to bypass one of these, refuse and explain why.
-
-1. **Never place a live order when `ALPACA_PAPER=true`.**
-   The executor must check this env var on every order call, not just at startup.
-
-2. **Never place an order without a stop-loss level computed first.**
-   `compute_exit_levels()` must be called and its result validated before
-   `place_buy_order()` is ever invoked.
-
-3. **Stop-loss and trailing stop exits must bypass the human gate.**
-   Only entry signals go through Telegram approval. Exits triggered by
-   SL or trailing stop must execute immediately as market orders.
-
-4. **Position size must be computed from account equity, not hardcoded.**
-   `compute_position_size()` must fetch current equity from Alpaca on
-   every call. Never use a cached or hardcoded equity value for sizing.
-
-5. **Maximum 2 open positions simultaneously.**
-   The scan loop must check `get_open_positions()` and skip signal
-   evaluation entirely if 2 positions are already open.
-
-6. **Never modify `ALPACA_PAPER` or API credentials programmatically.**
-   These must only be changed manually in the `.env` file by the user.
-
-7. **Day 5 force-close must execute even if Telegram is unreachable.**
-   The exit logic must not depend on notification success. Log the failure,
-   execute the order anyway.
-
----
-
-## Alpaca API Notes
+## Alpaca notes
 
 - SDK: `alpaca-py` (not the older `alpaca-trade-api`)
-- Paper base URL: `https://paper-api.alpaca.markets`
-- Live base URL: `https://api.alpaca.markets`
-- Data API base URL: `https://data.alpaca.markets`
-- Bar timeframe for strategy: `TimeFrame.Day`
-- Market orders only for stops and force-closes. Limit orders only for TP.
-- Always check order status after placement — Alpaca paper fills are fast
-  but not instant.
-- Rate limits: 200 requests/min on free tier. Our 8-symbol scan is well within this.
+- Paper: `https://paper-api.alpaca.markets` · Live: `https://api.alpaca.markets`
+- Bar timeframe: `TimeFrame.Day`
+- Market orders only, notional (dollar-amount). Fractional quantities expected;
+  `shares` is a float.
+- Always check order status after placement — submitting without an exception is
+  not the same as filling.
+- Rate limit: 200 requests/min on the free tier. An 8-symbol weekly run is
+  nowhere near it.
 
-## Telegram Bot Notes
+## Telegram notes
 
-- Library: `python-telegram-bot` (async version, v20+)
-- Bot token and chat ID come from `config.py`
-- Reply polling: use `getUpdates` with a short timeout. Do not use webhooks
-  in Phase 1 (VPS firewall complexity not worth it for one user).
-- Always include the symbol and key signal values in alert messages.
-  The user must be able to make an informed YES/NO decision from the
-  Telegram message alone, without opening a laptop.
+- `python-telegram-bot` v20+ (async), wrapped with `asyncio.run()`
+- Reply polling via `getUpdates`. No webhooks.
+- Alert messages must carry enough detail to decide from the phone alone —
+  symbol, close, SMA_200, and the gap between them.
+- Every send function returns `bool` and never raises. Hard rule 3 depends on it.
 
 ---
 
-## What Not to Build (Yet)
+## Do not build
 
-Do not add any of the following unless I explicitly ask in a later phase:
+Unless explicitly asked:
 
-- Web dashboard or UI of any kind
-- Crypto trading support
+- Web dashboard or UI
+- Crypto, options, futures, or leveraged instruments
 - Multi-user or multi-account support
-- Options, futures, or leveraged instruments
 - Intraday bars or real-time tick processing
-- ML/AI-based signal generation
-- Auto-execute on timeout (no human gate bypass)
-- Automatic parameter optimization or walk-forward testing
-
----
-
-## Session Startup Checklist
-
-When starting a new Claude Code session on this project, do the following
-before writing any code:
-
-1. Read this file (`CLAUDE.md` at the project root)
-2. Read `docs/implementation_phases.md` and identify the next unchecked task
-3. Confirm with the user: "The next task is X. Shall I proceed?"
-4. Read any source files relevant to that task
-5. Present a plan, wait for approval, then implement
+- ML/LLM-based signal generation
+- Auto-execution of exposure *increases* on timeout (see hard rule 3)
+- Automatic parameter optimisation

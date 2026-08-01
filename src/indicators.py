@@ -3,27 +3,19 @@ indicators.py — Technical indicator computation.
 
 Single public function: compute_indicators(df) takes a raw OHLCV DataFrame
 (as returned by data.py) and returns the same DataFrame with indicator columns
-appended. All computation is done by pandas-ta.
+appended.
 
 Column contract added by this module:
-  RSI_14         : float  — Relative Strength Index, 14-period
-  EMA_21         : float  — Exponential Moving Average, 21-period
-  EMA_50         : float  — Exponential Moving Average, 50-period
-  MACD           : float  — MACD line (12-period EMA − 26-period EMA)
-  MACD_signal    : float  — Signal line (9-period EMA of MACD)
-  MACD_hist      : float  — Histogram (MACD − signal)
-  VOL_SMA_20     : float  — Simple Moving Average of volume, 20-period
-  ATR_14         : float  — Average True Range, 14-period
-  ADX_14         : float  — Average Directional Index, 14-period (trend strength 0–100)
-  DMP_14         : float  — Plus Directional Indicator (+DI, bullish pressure)
-  DMN_14         : float  — Minus Directional Indicator (-DI, bearish pressure)
-  STOCHk_14_3_3  : float  — Stochastic %K, 14-period smoothed by 3
-  STOCHd_14_3_3  : float  — Stochastic %D, 3-period SMA of %K (signal line)
-  OBV            : float  — On-Balance Volume (cumulative volume trend)
+  SMA_200 : float — Simple Moving Average, 200-period (the regime filter)
 
-The first N rows of each indicator will be NaN (warm-up period). Callers
-must ensure the DataFrame is long enough — at least 60 rows is recommended
-so that EMA_50 has fully converged before the last row is evaluated.
+Only SMA_200 is computed. The retired signal strategy also produced RSI, EMA_21,
+EMA_50, MACD, VOL_SMA_20, ATR_14, ADX_14, Stochastic and OBV columns; nothing
+read them after the strategy changed, so they were removed rather than
+recalculated for every symbol every week. Git history has them if a future
+strategy needs them back.
+
+The first 199 rows of SMA_200 will be NaN (warm-up). Callers must ensure the
+DataFrame is long enough — see MIN_BARS_FOR_STRATEGY.
 """
 
 import logging
@@ -33,21 +25,28 @@ import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
-# Minimum bars needed for the slowest indicator (EMA_50) to produce a value.
+# Minimum bars for compute_indicators() to run at all. Short frames still
+# produce every column; the slow ones are simply NaN in the warm-up region.
 MIN_BARS = 60
+
+# Bars required before SMA_200 — and therefore the regime filter — is usable.
+# main.py validates against this and refuses to trade a symbol without it,
+# rather than silently treating a NaN regime as "stay flat".
+MIN_BARS_FOR_STRATEGY = 200
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Append all strategy indicators to a OHLCV DataFrame.
+    Append the strategy's indicator columns to an OHLCV DataFrame.
 
     Args:
         df: DataFrame with columns [timestamp, open, high, low, close, volume]
             as returned by data.get_historical_bars(). Must have at least
-            MIN_BARS rows for all indicators to converge on the final row.
+            MIN_BARS rows; MIN_BARS_FOR_STRATEGY rows are needed before
+            SMA_200 carries a value on the final row.
 
     Returns:
-        A new DataFrame with the original columns plus all indicator columns.
+        A new DataFrame with the original columns plus SMA_200.
         The original DataFrame is not modified.
 
     Raises:
@@ -57,38 +56,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     _validate_input(df)
 
     out = df.copy()
-
-    out["RSI_14"] = ta.rsi(out["close"], length=14)
-
-    out["EMA_21"] = ta.ema(out["close"], length=21)
-    out["EMA_50"] = ta.ema(out["close"], length=50)
-
-    macd_df = ta.macd(out["close"], fast=12, slow=26, signal=9)
-    out["MACD"]        = macd_df["MACD_12_26_9"]
-    out["MACD_signal"] = macd_df["MACDs_12_26_9"]
-    out["MACD_hist"]   = macd_df["MACDh_12_26_9"]
-
-    out["VOL_SMA_20"] = ta.sma(out["volume"], length=20)
-
-    out["ATR_14"] = ta.atr(out["high"], out["low"], out["close"], length=14)
-
-    adx_df = ta.adx(out["high"], out["low"], out["close"], length=14)
-    out["ADX_14"] = adx_df["ADX_14"]
-    out["DMP_14"] = adx_df["DMP_14"]
-    out["DMN_14"] = adx_df["DMN_14"]
-
-    stoch_df = ta.stoch(out["high"], out["low"], out["close"], k=14, d=3, smooth_k=3)
-    out["STOCHk_14_3_3"] = stoch_df["STOCHk_14_3_3"]
-    out["STOCHd_14_3_3"] = stoch_df["STOCHd_14_3_3"]
-
-    out["OBV"] = ta.obv(out["close"], out["volume"])
+    out["SMA_200"] = ta.sma(out["close"], length=200)
 
     logger.debug(
-        "compute_indicators: %d rows, last bar %s — RSI=%.1f ATR=%.2f",
+        "compute_indicators: %d rows, last bar %s — SMA_200=%s",
         len(out),
         out["timestamp"].iloc[-1].date() if "timestamp" in out.columns else "?",
-        out["RSI_14"].iloc[-1] if not pd.isna(out["RSI_14"].iloc[-1]) else float("nan"),
-        out["ATR_14"].iloc[-1] if not pd.isna(out["ATR_14"].iloc[-1]) else float("nan"),
+        out["SMA_200"].iloc[-1],
     )
 
     return out

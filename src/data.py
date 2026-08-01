@@ -22,7 +22,8 @@ whether to skip that symbol or abort the run.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+import zoneinfo
+from datetime import datetime, time as dtime, timedelta, timezone
 
 import pandas as pd
 from alpaca.data import StockHistoricalDataClient
@@ -49,17 +50,40 @@ _client = StockHistoricalDataClient(
 # Columns we expect in every DataFrame we return. Used for validation.
 _REQUIRED_COLUMNS = {"open", "high", "low", "close", "volume"}
 
+_ET = zoneinfo.ZoneInfo("America/New_York")
+
+# Regular-session close. A bar dated today is still forming before this time and
+# complete after it. See _drop_forming_bar.
+_SESSION_CLOSE = dtime(16, 0)
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
+def get_historical_bars(
+    symbol: str,
+    days: int = 365,
+    *,
+    completed_only: bool = False,
+) -> pd.DataFrame:
     """
     Fetch daily OHLCV bars for `symbol` going back `days` calendar days.
 
     Returns a DataFrame indexed by date (one row per trading day) with
     columns: open, high, low, close, volume, timestamp.
+
+    Args:
+        symbol: Ticker to fetch.
+        days: Calendar days of history. The strategy needs 200 completed bars
+            for SMA_200, so callers should request ~365 or more — a shorter
+            window leaves slow indicators under-converged rather than absent,
+            which fails silently rather than loudly.
+        completed_only: Drop the final bar when it is today's still-forming
+            session. During market hours Alpaca returns a partial bar for the
+            current day; evaluating it means acting on an incomplete close and
+            never seeing that bar in its final form. Set True for anything that
+            makes trading decisions.
 
     Raises:
         ValueError  — if the returned DataFrame is missing required columns
@@ -67,9 +91,9 @@ def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
         Exception   — any Alpaca API or network error is logged then re-raised.
 
     Why split-adjusted prices?
-        Comparing a pre-split bar to a post-split bar would make RSI, EMA,
-        and MACD calculations meaningless. Adjustment.ALL corrects for both
-        splits and dividends so the price series is continuous.
+        Comparing a pre-split bar to a post-split bar would make the 200-day
+        average meaningless. Adjustment.ALL corrects for both splits and
+        dividends so the price series is continuous.
     """
     # Compute the start date in UTC. Alpaca ignores weekends/holidays
     # automatically — requesting a Saturday start just moves to Monday.
@@ -113,6 +137,9 @@ def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
 
     df = _validate_and_clean(df, symbol)
 
+    if completed_only:
+        df = _drop_forming_bar(df, symbol)
+
     logger.info(
         "Fetched %d bars for %s  (%s → %s)",
         len(df),
@@ -120,6 +147,36 @@ def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
         df["timestamp"].iloc[0].date(),
         df["timestamp"].iloc[-1].date(),
     )
+    return df
+
+
+def _drop_forming_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """
+    Remove the trailing bar only while today's session is still in progress.
+
+    Alpaca includes the current session as a bar from the opening bell, so during
+    market hours the last row is a partial day and acting on it means deciding
+    against a close that has not happened yet.
+
+    After the close that same bar is complete and must be KEPT. Dropping it would
+    make the weekly rebalance decide on the previous day's close, giving live a
+    two-bar execution lag where the backtest has one.
+
+    The 16:00 ET cutoff is deliberately not holiday- or early-close-aware: on an
+    early-close day the bar is complete sooner, so keeping it after 16:00 is
+    still correct, just later than strictly necessary.
+    """
+    now_et = datetime.now(timezone.utc).astimezone(_ET)
+    last_bar_date = df["timestamp"].iloc[-1].date()
+
+    if last_bar_date != now_et.date() or now_et.time() >= _SESSION_CLOSE:
+        return df
+
+    df = df.iloc[:-1].copy()
+    logger.info("%s: dropped today's forming bar (%s, session still open)",
+                symbol, last_bar_date)
+    if df.empty:
+        raise ValueError(f"No completed bars for {symbol} after dropping today's.")
     return df
 
 

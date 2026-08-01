@@ -9,3 +9,6 @@ logs/
 *.db.bak
 data/
 trades.db
+
+# macOS
+.DS_Store

@@ -118,7 +118,7 @@ def main() -> None:
     if not all_fractionable:
         print("\nWARNING: One or more symbols are NOT fractionable.")
         print("         Signals on those symbols will fail at order placement.")
-        print("         Consider removing them from SYMBOLS in .env before Phase 4.\n")
+        print("         Consider removing them from SYMBOLS in .env before going live.\n")
 
     # ── 2. Notional buy ──────────────────────────────────────────────────
     try:

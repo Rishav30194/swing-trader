@@ -1,134 +1,101 @@
 # Swing Trader
 
-A personal, automated swing-trading application that executes a disciplined **3-to-5-day hold strategy** on a focused list of high-quality assets. The system scans for high-probability setups using combined technical indicators and manages risk strictly. A human approval gate sits in front of every trade entry.
+An automated portfolio application that holds a basket of 8 stocks and sells any one of them that falls below its own 200-day average price, holding cash until it recovers. It rebalances once a week and asks for approval over Telegram before buying anything.
 
-> **Current Status: Phase 3 in progress — all implementation complete. System deployed to VPS, now in paper trading observation period (target ≥ 20 trades).**
-
----
-
-## Strategy Overview
-
-### Asset Universe
-
-| Symbol | Type         | Rationale                                          |
-|--------|--------------|-----------------------------------------------------|
-| NVDA   | Single stock | High-volatility, high-liquidity swing candidate    |
-| ASML   | Single stock | Semiconductor equipment, lower NVDA correlation    |
-| VOO    | ETF          | S&P 500 tracker, trend-following use case          |
-| QQQM   | ETF          | Nasdaq-100, tech-heavy moderate volatility         |
-| MSFT   | Single stock | Large-cap tech, strong trend structure             |
-| AAPL   | Single stock | Highest US market liquidity                        |
-| AMD    | Single stock | High-beta semiconductor, similar profile to NVDA   |
-| TSM    | Single stock | Semiconductor equipment, non-US, lower correlation |
-
-### Buy Signal — Three-Condition AND Gate
-
-All three conditions must be true simultaneously on the same daily bar:
-
-1. **Trend Filter** — Close > EMA(50). Asset is in a structural uptrend. Never buy falling knives.
-2. **RSI Pullback** — 40 ≤ RSI(14) < 55. A mild, controlled dip within the uptrend. Below 40 suggests a deeper problem; at or above 55 means no real pullback has occurred.
-3. **MACD Bullish Crossover** — MACD line crossed above signal line on this specific bar (was at or below on the prior bar). Momentum is turning up.
-
-### Risk Management
-
-- **Stop-loss**: Entry − (1.5 × ATR). Adapts to each asset's actual volatility.
-- **Take-profit**: Entry + (2 × ATR). R:R ≥ 1.33:1, achievable within the 5-day hold window.
-- **Trailing stop**: Ratchets up as price rises, activates after 0.5× ATR move in favor. Locks in profit early.
-- **Force-close**: Day 5 EOD, regardless of P&L. Discipline over hope.
-
-### Exit Priority
-
-1. Hard stop hit → immediate market sell (no human gate)
-2. Trailing stop hit → immediate market sell (no human gate)
-3. Take-profit hit → limit sell at TP price
-4. Day 5 EOD → market close
-
-### Backtest Results (2022–2024)
-
-| Period | Sharpe | Max DD | Trades | Win Rate | Verdict |
-|--------|--------|--------|--------|----------|---------|
-| 2022–2024 (full) | 1.043 | -1.89% | 15 | 73.3% | Phase 2 gate PASS |
-| 2022 only (bear) | 0.228 | -1.48% | 2 | 50.0% | Capital protected |
-| 2023–2024 (bull) | 1.291 | -1.89% | 13 | 76.9% | PASS |
-
-The 2022 bear market result is intentional: the EMA_50 trend filter blocked almost all signals, leaving equity nearly flat (+0.55%) while the broader market fell ~20%.
+**Status: built, tested, and not running.** It is not deployed anywhere and holds no money.
 
 ---
 
-## Architecture
+## Read this before using it
 
-```
-┌─────────────────────────────────────────────────────┐
-│              Data Ingestion Layer                   │
-│   Alpaca API — historical bars + real-time quotes   │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              Strategy Layer                         │
-│  indicators.py → signals.py → risk.py               │
-│  RSI · EMA · MACD · Vol SMA · ATR                   │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│         Human-in-the-Loop Gate (Telegram)           │
-│  Alert sent → waits for YES/NO reply                │
-│  Stops bypass this gate and execute immediately     │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              Execution Layer                        │
-│  executor.py — Alpaca order placement               │
-│  Paper env (Phase 1–3) ↔ Live env (Phase 4)         │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              State & Scheduler Layer                │
-│  SQLite — positions, trade log                      │
-│  APScheduler — scans every 15 min, 9:45–15:45 EST   │
-└─────────────────────────────────────────────────────┘
-```
+**Buying these 8 stocks and leaving them alone beat this app, badly.**
 
-### Tech Stack
+Tested over 2018–2026, starting with $1,000, after taxes:
 
-| Component     | Choice                    |
-|---------------|---------------------------|
-| Language      | Python 3.12+              |
-| Broker / Data | Alpaca Markets API        |
-| Indicators    | `pandas-ta`               |
-| Backtesting   | Direct pandas simulation  |
-| Scheduler     | `APScheduler`             |
-| Notifications | `python-telegram-bot`     |
-| State store   | SQLite                    |
-| Deployment    | Ubuntu VPS + systemd      |
+| | your $1,000 becomes |
+|---|---|
+| This app | **~$5,800** |
+| Just buying the stocks and never touching them | **~$10,900** |
+
+Year by year, the app won **2 years out of 9** — both of them bad years:
+
+| year | this app | just holding |
+|---|---|---|
+| 2018 | −6.6% | −15.0% |
+| 2019 | +43.0% | **+79.7%** |
+| 2020 | +47.2% | **+80.4%** |
+| 2021 | +46.4% | **+52.6%** |
+| 2022 | −22.4% | −41.1% |
+| 2023 | +46.9% | **+90.6%** |
+| 2024 | +43.3% | **+60.3%** |
+| 2025 | +26.0% | **+38.7%** |
+| 2026 | +21.9% | **+28.6%** |
+
+### The one thing it is good at
+
+At the worst moment in those 8 years, $1,000 would have shown:
+
+- **Just holding:** $500
+- **This app:** $723
+
+That is the entire trade. It spares you about **$220** of frightening-looking loss and costs you about **$5,000** of gains.
+
+That trade only makes sense if a 50% drop would genuinely make you sell everything at the bottom. If you would hold through it, simple investing wins.
+
+### Two caveats that cut both ways
+
+- These 8 stocks were picked partly *because* they had already done well, so the "just holding" column is flattered too.
+- This 8-year window contained only one bad year. In a 2008-style crash the app would look considerably better than it does here.
 
 ---
 
-## Project Structure
+## How it works
 
-```
-swing-trader/
-├── src/
-│   ├── config.py       # Loads .env, exposes typed Settings dataclass
-│   ├── data.py         # Alpaca data fetching (historical + latest bar)
-│   ├── indicators.py   # RSI, EMA, MACD, Vol SMA, ATR (pure functions)
-│   ├── signals.py      # Three-condition AND gate evaluation
-│   ├── risk.py         # ATR-based SL/TP, position sizing, trailing stop
-│   ├── database.py     # SQLite state store + weekly summary aggregator
-│   ├── notifier.py     # Telegram alerts, weekly heartbeat, YES/NO reply handler
-│   └── executor.py     # Alpaca order placement (paper + live)
-├── tests/              # 180 unit tests (indicators, signals, risk, database, notifier, executor)
-├── docs/               # Architecture and implementation phase docs
-├── scripts/            # Data validation, DB pull/migrate, notional order smoke-test
-├── main.py             # Entry point — scheduler + orchestration
-├── backtest.py         # Phase 2 standalone backtest runner
-└── requirements.txt
-```
+**The rule, per stock, checked once a week on the most recent completed daily bar:**
+
+| currently | condition | action |
+|---|---|---|
+| holding it | price drops below 0.98 × its 200-day average | sell it |
+| not holding it | price rises above 1.02 × its 200-day average | buy it |
+| either | price is between those two lines | do nothing |
+
+The two thresholds are deliberately different. If both were exactly the 200-day average, a price hovering around it would trigger a buy and a sell every other week. The gap between them stops that.
+
+**Money:** the 8 stocks get equal shares of whatever you allocate — 1/8 each. A stock that gets sold leaves its share sitting in cash; the money is never piled into the remaining stocks.
+
+**Timing:** it runs after Friday's close. Orders queue and fill at Monday's open.
+
+**Approval:** one Telegram message a week listing every stock, its price, its 200-day average, and what it plans to do. Buying needs you to reply `YES`. **Selling never asks** — protecting you is automatic and happens even if Telegram is down.
+
+### The universe
+
+NVDA, ASML, VOO, QQQM, MSFT, AAPL, AMD, TSM
+
+---
+
+## Capital
+
+`TRADING_CAPITAL` sets how much the app is allowed to invest. It is **required** — the app refuses to start without it.
+
+This is not your account balance. A brokerage account holding $100,000 with `TRADING_CAPITAL=1000` invests $1,000 and ignores the rest. Profits compound: once the holdings are worth $1,100, it works with $1,100.
+
+The account is assumed to be used only by this app. Stocks you bought yourself are never sold and never counted, but the app warns about them each run. A short position stops the run entirely — this app only ever buys.
+
+---
+
+## Costs and tax
+
+Alpaca charges no commission. The regulatory fees on sales are a fraction of a cent. Neither matters.
+
+**Tax does.** In a normal (non-retirement) brokerage account, every sale creates a taxable gain. Buying and holding creates none until you finally sell.
+
+`DRIFT_TOLERANCE` (default 5%) controls how much small-scale rebalancing the app does, and is really a tax setting. At 0.1% it placed 1,727 orders across the backtest; at 5% it places 124 — and returns slightly *more* money. Fewer trades was better on every measure.
+
+In a retirement account (IRA/Roth) none of this applies and rebalancing is free.
 
 ---
 
 ## Setup
-
-### 1. Clone and install dependencies
 
 ```bash
 git clone https://github.com/Rishav30194/swing-trader.git
@@ -138,12 +105,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
-
-Create a `.env` file in the project root (never commit this):
+Create `.env` in the project root (never commit it):
 
 ```env
-# Alpaca — Paper Trading
+# Alpaca — paper trading
 ALPACA_API_KEY=your_paper_key_here
 ALPACA_API_SECRET=your_paper_secret_here
 ALPACA_PAPER=true
@@ -152,80 +117,91 @@ ALPACA_PAPER=true
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 
-# Strategy parameters (tune without touching code)
+# How much the app may invest — REQUIRED, and not your account balance
+TRADING_CAPITAL=1000
+
+# Universe
 SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
-RSI_LOWER_BOUND=40
-RSI_UPPER_BOUND=55
-ATR_STOP_MULTIPLIER=1.5
-ATR_TP_MULTIPLIER=2.0
-ATR_TRAILING_ACTIVATION=0.5
-RISK_PER_TRADE_PCT=0.02
-MAX_OPEN_POSITIONS=2
+
+# Strategy
+SMA_BAND=0.02              # sell below 0.98×, buy above 1.02× the 200-day average
+BARS_LOOKBACK_DAYS=365     # needs 200+ trading days of history
+
+# Rebalancing
+DRIFT_TOLERANCE=0.05       # skip small rebalancing trades; this is a tax setting
+MIN_ORDER_NOTIONAL=1.0
+REBALANCE_DAY=fri
+REBALANCE_HOUR=16
+REBALANCE_MINUTE=15
+REPLY_TIMEOUT_SECS=14400   # 4h to reply; orders queue to Monday anyway
+MAX_POSITION_PCT=0.25      # no single stock above 25%
 ```
 
-Get your Alpaca paper trading keys at [alpaca.markets](https://alpaca.markets). Create a Telegram bot via [@BotFather](https://t.me/BotFather).
+Alpaca paper keys: [alpaca.markets](https://alpaca.markets). Telegram bot: [@BotFather](https://t.me/BotFather).
 
-### 3. Validate the data pipeline
+## Running it
 
 ```bash
-python scripts/validate_data.py
+python backtest.py --benchmark    # test the strategy against simply holding
+python validate_oos.py            # stress-test it properly
+python main.py                    # run it live (paper)
+pytest tests/ -q                  # 249 tests
 ```
 
-All eight symbols should return 1 year of clean OHLCV bars with no nulls.
-
-### 4. Run the backtester
-
-```bash
-python backtest.py                                          # 2022–2024 full
-python backtest.py --start 2022-01-01 --end 2022-12-31     # bear market
-python backtest.py --start 2023-01-01 --end 2024-12-31     # bull market
-```
-
-### 5. Run the live paper trading loop
-
-```bash
-python main.py
-```
-
-The scheduler will start scanning every 15 minutes during market hours (9:45–15:45 EST). Trade entry alerts are sent to Telegram for human approval. A weekly summary is also sent every Friday at 16:30 EST — a clean health check (status, equity, open positions, trades closed, signals) confirming the app is running.
+`main.py` rebalances every Friday at 16:15 ET and sends a status message every Saturday at 09:00 ET.
 
 ---
 
-## Implementation Phases
+## Architecture
 
-| Phase | Description                        | Status                        |
-|-------|------------------------------------|-------------------------------|
-| 1     | Environment, data pipeline, config | Complete                      |
-| 2     | Indicators, signals, backtesting   | Complete                      |
-| 3     | Paper trading automation           | In progress (database done)   |
-| 4     | Live capital deployment            | Not started                   |
+```
+Alpaca (completed daily bars)
+        ↓
+indicators.py → portfolio.py          the strategy, pure functions
+        ↓
+Telegram approval                     buys need YES · sells never ask
+        ↓
+executor.py                           dollar-amount market orders
+        ↓
+SQLite + APScheduler                  state, audit log, weekly schedule
+```
 
-**Phase gate before live trading:** ≥ 20 paper trades, Sharpe > 0.8, max drawdown < 15%.
+`backtest.py` calls the same `portfolio.py` functions `main.py` calls, so the tested strategy and the live strategy cannot drift apart.
+
+```
+src/
+  config.py       loads .env into typed settings
+  data.py         fetches bars; drops today's unfinished bar
+  indicators.py   the 200-day average
+  portfolio.py    THE STRATEGY — decide, size, generate orders
+  database.py     SQLite: holdings state, cash ledger, audit log
+  notifier.py     Telegram messages and reply handling
+  executor.py     Alpaca orders and account state
+main.py           weekly scheduler
+backtest.py       strategy tester
+validate_oos.py   stress tests
+```
+
+Detail: [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## Risk Guardrails
+## Safety rules
 
-These are hard constraints that cannot be bypassed:
+Enforced in code, not by convention:
 
-- Live orders are blocked when `ALPACA_PAPER=true`
-- No order is placed without a stop-loss computed first
-- Stop-loss and trailing stop exits execute immediately without human approval
-- Position size is calculated from live account equity on every trade
-- Maximum 2 open positions at any time
-- Day 5 force-close executes even if Telegram is unreachable
+- No live orders while `ALPACA_PAPER=true`
+- No order without validated targets; a stock marked "sell" gets a target of exactly zero
+- **Sells run immediately and unconditionally**, including when Telegram is unreachable. Only buys wait for approval
+- Position sizes come from allocated capital fetched fresh every run, never a cached or hardcoded figure
+- One position per stock, each capped at `MAX_POSITION_PCT`
+- A failed order is logged, alerted, and never assumed to have worked — holdings are re-read from Alpaca every run
 
----
+## Going live
 
-## Paper → Live Switch
+Set `ALPACA_PAPER=false`, swap in live API keys, restart. No code changes.
 
-The only change needed to go from paper to live trading:
-
-1. Set `ALPACA_PAPER=false` in `.env`
-2. Replace API keys with live Alpaca credentials
-3. Restart the service
-
-Zero code changes by design.
+Orders are dollar-amount, so fractional shares are automatic — on $1,000 each stock gets $125, and ASML at ~$1,600/share resolves to about 0.08 shares.
 
 ---
 

@@ -56,8 +56,8 @@ v<MAJOR>.<MINOR>.<PATCH>
 |----------|------------------------------------------------|
 | `v0.1.0` | Phase 1 complete — data pipeline validated     |
 | `v0.2.0` | Phase 2 complete — backtest validates strategy |
-| `v0.3.0` | Phase 3 complete — paper trading proven        |
-| `v1.0.0` | Phase 4 — live capital deployment              |
+| `v0.3.0` | Paper trading validated                        |
+| `v1.0.0` | Live capital deployment                        |
 
 ### How to Cut a Release
 
