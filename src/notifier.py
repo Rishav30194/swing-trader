@@ -5,17 +5,16 @@ All public functions are synchronous. python-telegram-bot v20+ uses asyncio
 internally; each function wraps its async work with asyncio.run() so the rest
 of the codebase stays synchronous.
 
-Six public functions:
-  send_signal_alert(symbol, signal_context)         — buy signal, full indicator snapshot
-  send_execution_alert(symbol, order, position)     — entry fill confirmation
-  send_exit_alert(symbol, position, reason, price)  — exit confirmation with P&L
-  send_error_alert(error)                            — crash/error, never raises
-  send_weekly_summary(summary, equity)             — weekly heartbeat, never raises
-  listen_for_reply(timeout_seconds)                 — poll for YES or NO reply
+Five public functions:
+  send_rebalance_plan(orders, states, equity)  — weekly plan, asks for one YES
+  send_rebalance_result(results)               — what actually executed
+  send_error_alert(error)                      — crash/error, never raises
+  send_weekly_summary(summary, equity)         — weekly heartbeat, never raises
+  listen_for_reply(timeout_seconds)            — poll for YES or NO reply
 
-Note: send_exit_alert takes exit_price as an explicit argument. The spec lists
-three positional args, but the price is needed for the P&L line and the caller
-(main.py) always has it at the point of exit.
+Every send function is failure-tolerant and returns a bool rather than raising.
+Hard rule 3 requires exposure reductions to execute even when Telegram is
+unreachable, so no caller may be forced into an exception path by a failed send.
 """
 
 import asyncio
@@ -28,22 +27,20 @@ from telegram.constants import ParseMode
 
 from src.config import settings
 from src.database import WeeklySummary
-from src.risk import Position
+from src.portfolio import RebalanceOrder, RegimeState
 
 logger = logging.getLogger(__name__)
 
 # Created once at module import — reused for every send/poll call.
 _bot = telegram.Bot(token=settings.telegram_bot_token)
 
-_CHAT_ID    = settings.telegram_chat_id
-_POLL_SECS  = 5   # long-poll timeout per getUpdates call
+_CHAT_ID   = settings.telegram_chat_id
+_POLL_SECS = 5   # long-poll timeout per getUpdates call
 
-_EXIT_LABELS: dict[str, str] = {
-    "sl":       "Hard stop-loss",
-    "trailing": "Trailing stop",
-    "tp":       "Take-profit",
-    "day5":     "Day-5 force close",
-    "manual":   "Manual close",
+_REASON_LABELS: dict[str, str] = {
+    "regime_entry": "regime entry",
+    "regime_exit":  "regime exit",
+    "drift":        "drift trim",
 }
 
 
@@ -51,67 +48,85 @@ _EXIT_LABELS: dict[str, str] = {
 # Formatting helpers — pure functions, no I/O, straightforward to unit-test
 # ---------------------------------------------------------------------------
 
-def _fmt_signal(symbol: str, ctx: dict) -> str:
-    close  = ctx.get("close",  0.0)
-    ema_50 = ctx.get("ema_50", 0.0)
-    rsi    = ctx.get("rsi",    0.0)
-    atr    = ctx.get("atr",    0.0)
-    sl     = ctx.get("stop_loss")
-    tp     = ctx.get("take_profit")
-    rsi_lo = ctx.get("rsi_lower_bound", 40)
-    rsi_hi = ctx.get("rsi_upper_bound", 55)
-
-    ema_pct = (close - ema_50) / ema_50 * 100 if ema_50 else 0.0
-    sl_str  = f"${sl:.2f}  ({(sl - close) / close * 100:+.1f}%)" if sl else "—"
-    tp_str  = f"${tp:.2f}  ({(tp - close) / close * 100:+.1f}%)" if tp else "—"
-
-    return (
-        f"🔔 <b>BUY SIGNAL — {symbol}</b>\n\n"
-        f"<pre>"
-        f"Price  : ${close:.2f}  (EMA50 ${ema_50:.2f}  {ema_pct:+.1f}%)\n"
-        f"RSI    : {rsi:.1f}  [{rsi_lo:.0f}–{rsi_hi:.0f} ✓]\n"
-        f"MACD   : bullish crossover ✓\n"
-        f"ATR    : ${atr:.2f}\n\n"
-        f"SL     : {sl_str}\n"
-        f"TP     : {tp_str}"
-        f"</pre>\n\n"
-        f"Reply <b>YES</b> to approve or <b>NO</b> to skip."
-    )
+def _fmt_sleeve_line(symbol: str, state: RegimeState) -> str:
+    ctx = state.context
+    mark = "●" if state.on else "○"
+    close = ctx.get("close")
+    sma = ctx.get("sma_200")
+    if close is None or sma is None:
+        return f"{mark} {symbol:<6} (no data)"
+    gap = (close / sma - 1) * 100 if sma else 0.0
+    return f"{mark} {symbol:<6} {close:>9,.2f}  SMA200 {sma:>9,.2f}  {gap:+.1f}%"
 
 
-def _fmt_execution(symbol: str, order: dict, position: Position) -> str:
-    fill  = order.get("filled_avg_price", position.entry_price)
-    qty   = order.get("filled_qty", position.shares)
-    value = fill * qty
-    return (
-        f"✅ <b>ENTRY FILLED — {symbol}</b>\n\n"
-        f"<pre>"
-        f"Shares : {qty}\n"
-        f"Fill   : ${fill:.2f}  (${value:,.2f} total)\n"
-        f"SL     : ${position.stop_loss:.2f}\n"
-        f"TP     : ${position.take_profit:.2f}"
-        f"</pre>"
-    )
+def _fmt_order_line(order: RebalanceOrder) -> str:
+    label = _REASON_LABELS.get(order.reason, order.reason)
+    return f"{order.side.upper():<4} {order.symbol:<6} ${order.notional:>9,.2f}  {label}"
 
 
-def _fmt_exit(
-    symbol: str,
-    position: Position,
-    reason: str,
-    exit_price: float,
+def _fmt_rebalance_plan(
+    orders: list[RebalanceOrder],
+    states: dict[str, RegimeState],
+    equity: float,
 ) -> str:
-    pnl_dollars = (exit_price - position.entry_price) * position.shares
-    pnl_pct     = (exit_price - position.entry_price) / position.entry_price * 100
-    label       = _EXIT_LABELS.get(reason, reason)
-    icon        = "✅" if pnl_dollars >= 0 else "🔴"
+    increases = [o for o in orders if o.increases_exposure]
+    reductions = [o for o in orders if not o.increases_exposure]
+
+    sleeves = "\n".join(_fmt_sleeve_line(s, st) for s, st in sorted(states.items()))
+
+    if orders:
+        plan_lines = "\n".join(_fmt_order_line(o) for o in orders)
+    else:
+        plan_lines = "no changes needed"
+
+    buy_total = sum(o.notional for o in increases)
+    if increases:
+        ask = (
+            f"Reply <b>YES</b> to approve {len(increases)} increase(s) "
+            f"totalling ${buy_total:,.2f}, or <b>NO</b> to skip them."
+        )
+    else:
+        ask = "No increases to approve — nothing to reply to."
+
+    reduction_note = (
+        f"\n{len(reductions)} reduction(s) execute automatically."
+        if reductions else ""
+    )
+
     return (
-        f"{icon} <b>EXIT — {symbol}</b>\n\n"
+        f"🔄 <b>Weekly Rebalance</b>\n\n"
         f"<pre>"
-        f"Reason : {label}\n"
-        f"Exit   : ${exit_price:.2f}\n"
-        f"Entry  : ${position.entry_price:.2f}\n"
-        f"P&amp;L    : ${pnl_dollars:+,.2f}  ({pnl_pct:+.2f}%)"
+        f"Equity : ${equity:,.2f}\n\n"
+        f"Sleeves\n{sleeves}\n\n"
+        f"Plan\n{plan_lines}"
         f"</pre>"
+        f"{reduction_note}\n\n{ask}"
+    )
+
+
+def _fmt_rebalance_result(results: list[dict]) -> str:
+    if not results:
+        return "✅ <b>Rebalance complete</b>\n\nNo orders were required."
+
+    filled = [r for r in results if r["status"] == "filled"]
+    failed = [r for r in results if r["status"] == "failed"]
+    skipped = [r for r in results if r["status"] == "skipped"]
+
+    lines = []
+    for r in results:
+        icon = {"filled": "✓", "failed": "✗", "skipped": "–"}.get(r["status"], "?")
+        lines.append(f"{icon} {r['side'].upper():<4} {r['symbol']:<6} ${r['notional']:>9,.2f}")
+
+    icon = "🚨" if failed else "✅"
+    header = f"{icon} <b>Rebalance complete</b>"
+    tail = f"\n\n{len(failed)} order(s) FAILED — check the logs." if failed else ""
+
+    return (
+        f"{header}\n\n"
+        f"<pre>"
+        f"{chr(10).join(lines)}\n\n"
+        f"filled {len(filled)}  failed {len(failed)}  skipped {len(skipped)}"
+        f"</pre>{tail}"
     )
 
 
@@ -125,28 +140,29 @@ def _fmt_weekly(summary: WeeklySummary, equity: float | None) -> str:
     start = summary.period_start.strftime("%b %d")
     # Drop the repeated month on the end date within the same month: "Jun 02–08".
     end_fmt = "%d" if summary.period_start.month == summary.period_end.month else "%b %d"
-    end   = summary.period_end.strftime(end_fmt)
+    end = summary.period_end.strftime(end_fmt)
 
     equity_str = f"${equity:,.2f}" if equity is not None else "unavailable ⚠️"
-    open_str   = ", ".join(summary.open_symbols) if summary.open_symbols else "none"
+    on_str = ", ".join(summary.sleeves_on) if summary.sleeves_on else "none"
+    off_str = ", ".join(summary.sleeves_off) if summary.sleeves_off else "none"
 
-    if summary.trades_closed:
-        closed_str = (
-            f"{summary.trades_closed} trades  "
-            f"({summary.wins}W / {summary.losses}L)  "
-            f"${summary.net_pnl_dollars:+,.2f}"
+    traded = summary.notional_bought + summary.notional_sold
+    if summary.orders_filled or summary.orders_failed:
+        orders_str = (
+            f"{summary.orders_filled} filled / {summary.orders_failed} failed  "
+            f"(${traded:,.2f})"
         )
     else:
-        closed_str = "0 trades"
+        orders_str = "none"
 
     return (
         f"📊 <b>Weekly Summary — {start}–{end}</b>\n\n"
         f"<pre>"
         f"Status   : ✅ Running\n"
         f"Equity   : {equity_str}\n"
-        f"Open     : {open_str}\n"
-        f"Closed   : {closed_str}\n"
-        f"Signals  : {summary.signals}"
+        f"Invested : {on_str}\n"
+        f"In cash  : {off_str}\n"
+        f"Orders   : {orders_str}"
         f"</pre>"
     )
 
@@ -166,7 +182,7 @@ async def _send(text: str) -> None:
 async def _listen_async(timeout_seconds: int) -> bool | None:
     # Drain the existing update queue so we only react to messages sent
     # AFTER this alert was dispatched. Without draining, a stale YES/NO
-    # from a previous signal would immediately approve or reject this one.
+    # from a previous week would immediately approve or reject this one.
     existing = await _bot.get_updates(timeout=0)
     offset: int | None = (existing[-1].update_id + 1) if existing else None
 
@@ -211,43 +227,47 @@ async def _listen_async(timeout_seconds: int) -> bool | None:
 # Public synchronous API
 # ---------------------------------------------------------------------------
 
-def send_signal_alert(symbol: str, signal_context: dict) -> None:
+def send_rebalance_plan(
+    orders: list[RebalanceOrder],
+    states: dict[str, RegimeState],
+    equity: float,
+) -> bool:
     """
-    Send a buy signal alert to Telegram.
+    Send the weekly rebalance plan: every sleeve's regime state and the orders
+    that follow from it.
 
-    signal_context is the dict from SignalResult.context, optionally enriched
-    with 'stop_loss' and 'take_profit' keys by the caller before sending.
-    The message must give the user enough information to approve or reject
-    the trade without opening a laptop.
+    The message must let the user approve or reject without opening a laptop,
+    so it shows the close, the 200-day SMA, and the gap for every sleeve.
+
+    Returns True if the message was delivered. Never raises — a failed send
+    must not stop reductions from executing (hard rule 3).
     """
-    asyncio.run(_send(_fmt_signal(symbol, signal_context)))
-    logger.info("Signal alert sent for %s", symbol)
+    try:
+        asyncio.run(_send(_fmt_rebalance_plan(orders, states, equity)))
+        logger.info("Rebalance plan sent (%d orders)", len(orders))
+        return True
+    except Exception:
+        logger.exception("send_rebalance_plan failed — proceeding with reductions anyway")
+        return False
 
 
-def send_execution_alert(symbol: str, order: dict, position: Position) -> None:
+def send_rebalance_result(results: list[dict]) -> bool:
     """
-    Confirm an entry fill. order is the Alpaca order dict with at minimum
-    'filled_avg_price' and 'filled_qty' keys.
+    Report what actually executed. `results` entries need keys:
+    symbol, side, notional, status (filled | failed | skipped).
+
+    Never raises.
     """
-    asyncio.run(_send(_fmt_execution(symbol, order, position)))
-    logger.info("Execution alert sent for %s", symbol)
+    try:
+        asyncio.run(_send(_fmt_rebalance_result(results)))
+        logger.info("Rebalance result sent (%d orders)", len(results))
+        return True
+    except Exception:
+        logger.exception("send_rebalance_result failed — could not reach Telegram")
+        return False
 
 
-def send_exit_alert(
-    symbol: str,
-    position: Position,
-    reason: str,
-    exit_price: float,
-) -> None:
-    """
-    Confirm an exit. reason is one of: sl | trailing | tp | day5 | manual.
-    exit_price is the actual fill price used to compute the P&L line.
-    """
-    asyncio.run(_send(_fmt_exit(symbol, position, reason, exit_price)))
-    logger.info("Exit alert sent for %s reason=%s", symbol, reason)
-
-
-def send_error_alert(error: Exception | str) -> None:
+def send_error_alert(error: Exception | str) -> bool:
     """
     Send a crash or error notification. Never raises — catches its own
     exceptions and logs them. Must not depend on any state that could
@@ -255,11 +275,13 @@ def send_error_alert(error: Exception | str) -> None:
     """
     try:
         asyncio.run(_send(_fmt_error(error)))
+        return True
     except Exception:
         logger.exception("send_error_alert failed — could not reach Telegram")
+        return False
 
 
-def send_weekly_summary(summary: WeeklySummary, equity: float | None) -> None:
+def send_weekly_summary(summary: WeeklySummary, equity: float | None) -> bool:
     """
     Send the weekly heartbeat summary. Never raises — a failed heartbeat must
     not disturb the scheduler. equity is None when the account fetch failed,
@@ -268,17 +290,19 @@ def send_weekly_summary(summary: WeeklySummary, equity: float | None) -> None:
     try:
         asyncio.run(_send(_fmt_weekly(summary, equity)))
         logger.info("Weekly summary sent")
+        return True
     except Exception:
         logger.exception("send_weekly_summary failed — could not reach Telegram")
+        return False
 
 
 def listen_for_reply(timeout_seconds: int) -> bool | None:
     """
-    Poll Telegram for a YES or NO reply after a signal alert.
+    Poll Telegram for a YES or NO reply after the rebalance plan is sent.
 
     Returns:
-        True   — user replied YES or Y (approve trade)
-        False  — user replied NO or N (skip trade)
-        None   — no reply received within timeout_seconds
+        True   — user replied YES or Y (approve exposure increases)
+        False  — user replied NO or N (skip increases)
+        None   — no reply received within timeout_seconds (treated as skip)
     """
     return asyncio.run(_listen_async(timeout_seconds))

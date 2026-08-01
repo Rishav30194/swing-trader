@@ -3,6 +3,20 @@
 Progress is tracked here. Check boxes as tasks are completed.
 Never skip a phase gate — each one exists to protect capital.
 
+> ## ⚠️ Strategy replaced — 2026-08-01
+>
+> Phases 1–3 below were built around a three-condition signal gate
+> (close > EMA_50, RSI 40–55, MACD crossover). **That strategy was retired after
+> testing showed it had no measurable edge** — CAGR −1.12%, Sharpe −0.08, and a
+> permutation test on its trade P&Ls returning p = 0.6144.
+>
+> It has been replaced by an **SMA-200 regime overlay**. See
+> **Phase 3R** near the end of this document for the replacement work, and
+> `docs/strategy_validation.md` for the evidence.
+>
+> Phases 1–3 are kept as a historical record. Their checked boxes describe work
+> that was genuinely done; they no longer describe the current system.
+
 ---
 
 ## Phase 1 — Environment, Data Pipeline & Configuration
@@ -222,13 +236,86 @@ statistical edge re-validation.
 - [x] Run `python scripts/test_notional_order.py` during market hours to verify notional flow
 - [x] Confirm Telegram alerts arrive on phone from VPS
 
-### Paper Trading Observation Period
-- [ ] Run for minimum 4–8 weeks (target ≥ 20 trades)
-- [ ] Log every trade outcome in `trade_log`
-- [ ] Weekly review: run `bash scripts/pull_db.sh` and review positions + trade_log in DB Browser
-- [ ] Do not adjust strategy parameters mid-observation (taints the sample)
+### Paper Trading Observation Period — ABANDONED, strategy retired
+- [x] Ran 2026-05-26 → 2026-07-31 on the VPS. **1,129 scan cycles, 9,032 bar
+      fetches, zero unhandled errors — and zero trades.**
 - [x] Add weekly Telegram heartbeat summary (Fri 16:30 ET) so the app's health is
-      visible each week without opening a laptop — observability only, no strategy change (PR #9)
+      visible each week without opening a laptop — observability only (PR #9)
+- [x] Root-caused the zero-trade result (2026-07-31). Three findings:
+  - [x] **Two live defects.** `_BARS_LOOKBACK = 90` returned only 61–63 bars,
+        leaving EMA_50 under-converged and reading up to 1.7% high; and the scan
+        always evaluated the in-progress intraday bar, so a MACD crossover
+        confirmed at the close could never be acted on — by the next session it
+        was the *previous* bar and the crossover test could no longer fire.
+  - [x] **The one signal that did qualify was suppressed.** NVDA 2026-07-08:
+        close 204.12 > EMA_50 203.50, RSI 51.0, MACD crossed. The live 90-bar
+        window computed EMA_50 = 204.96, so the trend filter failed.
+  - [x] **The strategy had no edge anyway** — permutation p = 0.6144, negative
+        CAGR over 8 years, last place of 9 strategies in both train and test
+        halves. Fixing the defects would have produced more trades and more loss.
+- [x] Observation period voided. The sample was collected under a strategy that
+      is no longer in use and does not carry over.
+
+---
+
+## Phase 3R — Strategy Replacement (2026-08-01)
+**Goal:** Replace a strategy with no edge with one whose single claim survives
+scrutiny, and rebuild the application around it.
+**Gate to Phase 4:** 26 weekly rebalances executed with zero unhandled crashes,
+max drawdown < 15%, and live regime transitions matching the backtest on the
+same bars.
+
+### Research
+- [x] Multi-strategy sweep — ~200 configurations across technical rules,
+      cross-sectional momentum, sector rotation, options, volatility targeting,
+      and LLM signals, on four universes
+- [x] Establish survivorship bias as the dominant effect (same strategy: Sharpe
+      1.19 on the original 8 symbols, 0.17 on sector ETFs)
+- [x] Reject options on real Alpaca option bars — covered call won 89% of 27
+      monthly cycles and netted +$57 against +$29,183 for holding the shares;
+      every underlying affordable at $1k has a spread wider than the break-even
+- [x] Reject LLM/agentic signal generation on published evidence + the
+      self-contamination problem
+- [x] Reject volatility targeting — a static control at matched exposure scored
+      *higher* out-of-sample (1.62 vs 1.56)
+- [x] Adopt the SMA-200 regime overlay; validate it against a matched-exposure
+      static control across train/test on four universes, plus a block bootstrap
+      on drawdown (98.7%–100% of resamples shallower)
+- [x] Write `docs/strategy_validation.md` — evidence **and** the limits of the claim
+
+### Implementation
+- [x] Revise `CLAUDE.md` hard rules 2, 3, 5, 7 for the new design
+- [x] `src/portfolio.py` — regime state, target weights, order diffing (pure)
+- [x] `SMA_200` + `MIN_BARS_FOR_STRATEGY` in `indicators.py`
+- [x] `data.py` — `completed_only` flag; fixes the forming-bar defect
+- [x] `config.py` — swap strategy parameters (credential loading untouched)
+- [x] `database.py` — `sleeves` + `rebalance_log` tables; `positions` preserved
+- [x] `notifier.py` — weekly plan + result messages; all sends non-raising
+- [x] `executor.py` — `get_current_holdings()`, `place_sell_notional()`
+- [x] `main.py` — weekly rebalance scheduler replaces the 15-min scan loop
+- [x] `backtest.py` — rewritten to call `portfolio.py`, so live and backtest
+      cannot diverge
+- [x] `validate_oos.py` — matched-exposure control, train/test, block bootstrap
+- [x] Delete `signals.py` and its tests
+- [x] 211 unit tests passing
+- [x] Backtest reproduces the validated figures (maxDD −25.56% exact match)
+
+  > **Bug caught by that integration check:** `compute_target_weights` divided by
+  > the number of *evaluated* sleeves rather than the configured universe size.
+  > With QQQM absent before its 2020 listing, the other 7 sleeves each took 1/7
+  > instead of 1/8 — a transient data outage would have silently concentrated
+  > the portfolio. Fixed; `universe_size` is now a required argument.
+
+### Deployment
+- [ ] Add new strategy vars to VPS `.env` (`SMA_BAND`, `REBALANCE_*`, …)
+- [ ] Deploy to VPS (`git pull && sudo systemctl restart swing-trader`)
+- [ ] Confirm the first weekly plan message arrives on Friday
+- [ ] Verify the first rebalance executes and fills at Monday's open
+
+### Observation
+- [ ] Run 26 weekly rebalances (~6 months)
+- [ ] Weekly review via `bash scripts/pull_db.sh`
+- [ ] Do not re-tune the band or cadence mid-observation (taints the sample)
 
 ---
 
@@ -243,29 +330,41 @@ statistical edge re-validation.
 - [x] `MAX_POSITION_PCT=0.25` — caps each position at 25% of equity ($250 on $1k)
 - [x] Database schema: `shares REAL NOT NULL`
 
-### Strategy enhancements to evaluate after paper trading (do not touch before Phase 4)
-- [ ] **Trailing-stop-only exit** — remove the day-5 force-close and let the trailing stop be
-      the sole time-based protection. Paper trading showed 71% of exits hit day-5 at avg +1.47%;
-      winners like NVDA (+9.57%) and TSM (+4.44%) were cut short. Evaluate on fresh live data
-      whether removing the calendar rule lets winners run further without materially increasing
-      drawdown. Requires backtesting on untouched post-paper data before enabling in production.
+  > **Superseded:** the trailing-stop and day-5 enhancements listed here belonged
+  > to the retired strategy. The overlay has no per-trade stops or time exits.
+
+  > **ASML no longer needs removing.** That item existed because whole-share
+  > sizing made a $1,600 stock unusable on a $1k account. With 8 equal sleeves at
+  > $125 each and notional orders, ASML resolves to ~0.08 shares, which is fine.
 
 ### Still required before going live
-- [ ] Confirm Phase 3 gate criteria are met (≥ 20 trades, drawdown < 15%, zero crashes/2wk)
-- [ ] Remove ASML from live `.env` SYMBOLS — at $1,600+, even 25% cap gives ~0.15 shares,
-      too small to be meaningful on a $1k account; keep in paper universe
+- [ ] Confirm Phase 3R gate criteria are met (26 rebalances, drawdown < 15%,
+      zero crashes, live transitions match backtest)
 - [ ] Generate live Alpaca API keys (separate from paper keys)
-- [ ] Update `.env` on VPS: `ALPACA_PAPER=false` + live credentials + updated SYMBOLS
-- [ ] Start with $1,000 capital — monitor closely for first 2 weeks
-- [ ] Scale up only after live fills and P&L match paper behavior
+- [ ] Update `.env` on VPS: `ALPACA_PAPER=false` + live credentials
+- [ ] Start with $1,000 capital — monitor closely for the first 2 weeks
+- [ ] Scale up only after live fills and drawdown behaviour match paper
+
+### Expectations to hold going in
+- Expect roughly **two-thirds of buy-and-hold's return for half its drawdown**.
+- Expect to *underperform* buy-and-hold in most years. It beat buy-and-hold in
+  2 of 9 calendar years — 2018 and 2022. That is the design, not a malfunction.
+- Do not re-tune the band or cadence in response to underperformance in an up
+  year. The drawdown reduction is the only effect that replicated; optimising
+  against anything else is fitting noise.
 
 ---
 
 ## Appendix — Phase Gate Summary
 
-| Gate         | Condition                                          |
-|--------------|----------------------------------------------------|
-| Phase 1 → 2  | Clean data for all symbols, no nulls, 1yr range     |
-| Phase 2 → 3  | Backtest Sharpe > 0.5, max drawdown < 25%          |
-| Phase 3 → 4  | ≥ 20 paper trades, drawdown < 15%, zero crashes/2wk |
-| Scale-up     | Live results match paper results over 2 weeks      |
+| Gate          | Condition                                                      |
+|---------------|----------------------------------------------------------------|
+| Phase 1 → 2   | Clean data for all symbols, no nulls, 1yr range                |
+| Phase 2 → 3   | Backtest Sharpe > 0.5, max drawdown < 25%                      |
+| Phase 3 → 4   | *(retired with the old strategy)*                              |
+| Phase 3R → 4  | 26 weekly rebalances, drawdown < 15%, zero crashes, live regime transitions match backtest |
+| Scale-up      | Live drawdown behaviour matches paper over 2 weeks             |
+
+Note the Phase 3R gate contains no Sharpe or win-rate condition. The strategy
+does not claim an edge, so testing for one would be measuring noise. What is
+being validated is operational reliability and drawdown behaviour.

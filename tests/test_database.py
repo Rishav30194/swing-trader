@@ -17,8 +17,11 @@ from src.database import (
     save_position,
     update_position,
     get_open_positions,
+    get_regime_states,
     get_weekly_summary,
     log_event,
+    log_rebalance_order,
+    set_regime_state,
 )
 from src.risk import Position
 
@@ -256,61 +259,106 @@ def test_log_multiple_events(conn):
 # get_weekly_summary
 # ---------------------------------------------------------------------------
 
-def _close_position(conn, *, symbol: str, pnl: float, exit_date: date) -> None:
-    """Insert a position and immediately mark it closed with the given P&L."""
-    db_id = save_position(conn, _make_position(symbol=symbol))
-    update_position(
-        conn, db_id,
-        status="closed",
-        exit_date=exit_date.isoformat(),
-        exit_price=510.0,
-        exit_reason="tp",
-        pnl_dollars=pnl,
-        pnl_pct=pnl / 10,
-    )
-
-
 def test_weekly_summary_empty_db(conn):
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert s.trades_closed == 0
-    assert s.wins == 0 and s.losses == 0
-    assert s.net_pnl_dollars == 0.0
-    assert s.open_symbols == []
-    assert s.signals == 0
+    assert s.sleeves_on == [] and s.sleeves_off == []
+    assert s.orders_filled == 0 and s.orders_failed == 0
+    assert s.notional_bought == 0.0 and s.notional_sold == 0.0
     assert s.period_end == date.today()
 
 
-def test_weekly_summary_counts_wins_losses_and_net(conn):
-    today = date.today()
-    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
-    _close_position(conn, symbol="AMD",  pnl=-40.0, exit_date=today - timedelta(days=2))
-    s = get_weekly_summary(conn, today - timedelta(days=7))
-    assert s.trades_closed == 2
-    assert s.wins == 1
-    assert s.losses == 1
-    assert s.net_pnl_dollars == pytest.approx(80.0)
-
-
-def test_weekly_summary_excludes_trades_before_window(conn):
-    today = date.today()
-    _close_position(conn, symbol="NVDA", pnl=120.0, exit_date=today)
-    _close_position(conn, symbol="AMD",  pnl=999.0, exit_date=today - timedelta(days=30))
-    s = get_weekly_summary(conn, today - timedelta(days=7))
-    assert s.trades_closed == 1
-    assert s.net_pnl_dollars == pytest.approx(120.0)
-
-
-def test_weekly_summary_reports_open_symbols(conn):
-    save_position(conn, _make_position(symbol="NVDA"))
-    save_position(conn, _make_position(symbol="TSM"))
+def test_weekly_summary_splits_sleeves_by_regime(conn):
+    set_regime_state(conn, "NVDA", True)
+    set_regime_state(conn, "MSFT", True)
+    set_regime_state(conn, "ASML", False)
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert set(s.open_symbols) == {"NVDA", "TSM"}
-    assert s.trades_closed == 0
+    assert s.sleeves_on == ["MSFT", "NVDA"]
+    assert s.sleeves_off == ["ASML"]
 
 
-def test_weekly_summary_counts_signals_in_window_only(conn):
-    log_event(conn, "NVDA", "signal")
-    log_event(conn, "AMD", "signal")
-    log_event(conn, "AMD", "approved")  # not a signal — must not count
+def test_weekly_summary_counts_filled_and_failed(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    log_rebalance_order(conn, "AMD", "sell", 60.0, "regime_exit", "filled")
+    log_rebalance_order(conn, "TSM", "buy", 90.0, "regime_entry", "failed")
+    log_rebalance_order(conn, "VOO", "buy", 40.0, "drift", "skipped")
     s = get_weekly_summary(conn, date.today() - timedelta(days=7))
-    assert s.signals == 2
+    assert s.orders_filled == 2
+    assert s.orders_failed == 1
+
+
+def test_weekly_summary_sums_notional_by_side_for_fills_only(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    log_rebalance_order(conn, "MSFT", "buy", 75.0, "drift", "filled")
+    log_rebalance_order(conn, "AMD", "sell", 60.0, "regime_exit", "filled")
+    log_rebalance_order(conn, "TSM", "buy", 999.0, "regime_entry", "failed")
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.notional_bought == pytest.approx(200.0)
+    assert s.notional_sold == pytest.approx(60.0)
+
+
+def test_weekly_summary_excludes_orders_before_window(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled")
+    conn.execute(
+        "UPDATE rebalance_log SET timestamp = ? WHERE symbol = 'NVDA'",
+        ((date.today() - timedelta(days=30)).isoformat(),),
+    )
+    conn.commit()
+    log_rebalance_order(conn, "MSFT", "buy", 75.0, "regime_entry", "filled")
+    s = get_weekly_summary(conn, date.today() - timedelta(days=7))
+    assert s.orders_filled == 1
+    assert s.notional_bought == pytest.approx(75.0)
+
+
+# ---------------------------------------------------------------------------
+# Sleeve regime state
+# ---------------------------------------------------------------------------
+
+def test_get_regime_states_empty_by_default(conn):
+    assert get_regime_states(conn) == {}
+
+
+def test_set_and_get_regime_state(conn):
+    set_regime_state(conn, "NVDA", True, last_close=204.12, last_sma_200=203.5)
+    assert get_regime_states(conn) == {"NVDA": True}
+
+
+def test_set_regime_state_upserts_rather_than_duplicating(conn):
+    set_regime_state(conn, "NVDA", True)
+    set_regime_state(conn, "NVDA", False)
+    states = get_regime_states(conn)
+    assert states == {"NVDA": False}
+    assert conn.execute("SELECT COUNT(*) FROM sleeves").fetchone()[0] == 1
+
+
+def test_regime_state_persists_decision_inputs(conn):
+    set_regime_state(conn, "NVDA", True, last_close=204.12, last_sma_200=203.5)
+    row = conn.execute("SELECT * FROM sleeves WHERE symbol = 'NVDA'").fetchone()
+    assert row["last_close"] == pytest.approx(204.12)
+    assert row["last_sma_200"] == pytest.approx(203.5)
+
+
+# ---------------------------------------------------------------------------
+# rebalance_log
+# ---------------------------------------------------------------------------
+
+def test_log_rebalance_order_writes_row(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 125.0, "regime_entry", "filled",
+                        order_id="abc-123", detail={"filled_avg_price": 204.0})
+    row = conn.execute("SELECT * FROM rebalance_log").fetchone()
+    assert row["symbol"] == "NVDA"
+    assert row["side"] == "buy"
+    assert row["notional"] == pytest.approx(125.0)
+    assert row["status"] == "filled"
+    assert row["order_id"] == "abc-123"
+
+
+def test_log_rebalance_order_serialises_detail_as_json(conn):
+    log_rebalance_order(conn, "NVDA", "buy", 1.0, "drift", "failed",
+                        detail={"error": "rejected"})
+    row = conn.execute("SELECT detail FROM rebalance_log").fetchone()
+    assert json.loads(row["detail"]) == {"error": "rejected"}
+
+
+def test_log_rebalance_order_allows_null_detail(conn):
+    log_rebalance_order(conn, "NVDA", "sell", 1.0, "regime_exit", "skipped")
+    assert conn.execute("SELECT detail FROM rebalance_log").fetchone()["detail"] is None

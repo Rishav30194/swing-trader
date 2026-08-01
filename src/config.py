@@ -71,35 +71,32 @@ class Settings:
     symbols: tuple[str, ...]
 
     # --- Strategy thresholds ---
-    # RSI must be at or above this value (no panic-sell entries).
-    rsi_lower_bound: float
+    # Hysteresis half-width around SMA_200, as a fraction. 0.02 means a held
+    # sleeve exits below 0.98 × SMA_200 and a flat sleeve enters above 1.02 ×.
+    # The band is what keeps turnover near 7×/yr instead of ~20×/yr.
+    sma_band: float
 
-    # RSI must be strictly below this value (only buy actual dips, not breakouts).
-    rsi_upper_bound: float
+    # Calendar days of history to request. SMA_200 needs 200 completed bars,
+    # so this must comfortably exceed 200 trading days.
+    bars_lookback_days: int
 
-    # --- ATR-based exit multipliers ---
-    # Hard stop-loss = entry_price - (atr_stop_multiplier × ATR)
-    atr_stop_multiplier: float
+    # --- Rebalancing ---
+    # Skip rebalance trades smaller than this fraction of equity, to avoid
+    # churning on dust. Regime transitions are a full sleeve and never affected.
+    drift_tolerance: float
 
-    # Take-profit    = entry_price + (atr_tp_multiplier × ATR)
-    atr_tp_multiplier: float
+    # Alpaca rejects notional orders below $1.
+    min_order_notional: float
 
-    # Trailing stop activates once price rises by this many ATRs above entry.
-    atr_trailing_activation: float
+    # When the weekly rebalance runs (ET). Operational, not a strategy parameter.
+    rebalance_day: str
+    rebalance_hour: int
+    rebalance_minute: int
 
-    # --- Position sizing ---
-    # Fraction of account equity to risk on each trade.
-    # 0.02 = risk at most 2% of the account per position.
-    risk_per_trade_pct: float
-
-    # Hard cap: never hold more than this many open positions at once.
-    max_open_positions: int
-
-    # Seconds to wait for a YES/NO reply before treating the signal as skipped.
+    # Seconds to wait for the weekly YES/NO reply before skipping increases.
     reply_timeout_secs: int
 
-    # Max fraction of equity to deploy in a single position (e.g. 0.25 = 25%).
-    # Caps the notional value sent to Alpaca regardless of risk-based sizing.
+    # Max fraction of equity to deploy in a single sleeve (e.g. 0.25 = 25%).
     max_position_pct: float
 
     # --- Derived convenience properties ---
@@ -149,18 +146,23 @@ def _load_settings() -> Settings:
 
         symbols=symbols,
 
-        # Strategy thresholds — all have sensible defaults matching the spec,
-        # but can be overridden in .env without touching this file.
-        rsi_lower_bound=float(_get("RSI_LOWER_BOUND", "40")),
-        rsi_upper_bound=float(_get("RSI_UPPER_BOUND", "55")),
+        # Strategy thresholds — all have sensible defaults matching the
+        # validated configuration in docs/strategy_validation.md, but can be
+        # overridden in .env without touching this file.
+        sma_band=float(_get("SMA_BAND", "0.02")),
+        bars_lookback_days=int(_get("BARS_LOOKBACK_DAYS", "365")),
 
-        atr_stop_multiplier=float(_get("ATR_STOP_MULTIPLIER", "1.5")),
-        atr_tp_multiplier=float(_get("ATR_TP_MULTIPLIER", "2.0")),
-        atr_trailing_activation=float(_get("ATR_TRAILING_ACTIVATION", "0.5")),
+        drift_tolerance=float(_get("DRIFT_TOLERANCE", "0.001")),
+        min_order_notional=float(_get("MIN_ORDER_NOTIONAL", "1.0")),
 
-        risk_per_trade_pct=float(_get("RISK_PER_TRADE_PCT", "0.02")),
-        max_open_positions=int(_get("MAX_OPEN_POSITIONS", "2")),
-        reply_timeout_secs=int(_get("REPLY_TIMEOUT_SECS", "300")),
+        rebalance_day=_get("REBALANCE_DAY", "fri"),
+        rebalance_hour=int(_get("REBALANCE_HOUR", "16")),
+        rebalance_minute=int(_get("REBALANCE_MINUTE", "15")),
+
+        # 4 hours: the plan is sent after Friday's close and the orders queue to
+        # Monday's open, so there is no rush — this just needs to be long enough
+        # that stepping away from the phone does not silently skip the increases.
+        reply_timeout_secs=int(_get("REPLY_TIMEOUT_SECS", "14400")),
         max_position_pct=float(_get("MAX_POSITION_PCT", "0.25")),
     )
 

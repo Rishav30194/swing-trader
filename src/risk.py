@@ -1,5 +1,13 @@
 """
-risk.py — Position sizing and exit level computation.
+risk.py — LEGACY. Position sizing and exit levels for the retired signal strategy.
+
+The current strategy is the SMA-200 regime overlay in `portfolio.py`, which has
+no per-trade stops, take-profits, or risk-based sizing — the regime band is the
+risk control. Nothing in this module is called by `main.py` or `backtest.py`.
+
+It is retained only because `database.py`'s legacy `positions` helpers use the
+`Position` dataclass to read historical rows written before 2026-08-01. Do not
+build on it; see `docs/strategy_validation.md` for why the strategy changed.
 
 Four public functions:
 

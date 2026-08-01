@@ -6,7 +6,8 @@ All Telegram API calls are mocked. No real network calls are made.
 Coverage:
   - Formatting helpers produce correct structure and content.
   - Each send_* function calls bot.send_message with HTML parse mode.
-  - send_error_alert never raises even when the bot is unreachable.
+  - Every send_* function returns False instead of raising when the bot is
+    unreachable — hard rule 3 requires reductions to proceed regardless.
   - listen_for_reply returns True (YES), False (NO), or None (timeout).
   - listen_for_reply drains the queue before listening to avoid stale replies.
 """
@@ -19,19 +20,17 @@ import pytest
 import src.notifier as notifier
 from src.notifier import (
     _fmt_error,
-    _fmt_execution,
-    _fmt_exit,
-    _fmt_signal,
+    _fmt_rebalance_plan,
+    _fmt_rebalance_result,
     _fmt_weekly,
     listen_for_reply,
     send_error_alert,
-    send_execution_alert,
-    send_exit_alert,
-    send_signal_alert,
+    send_rebalance_plan,
+    send_rebalance_result,
     send_weekly_summary,
 )
 from src.database import WeeklySummary
-from src.risk import Position
+from src.portfolio import RebalanceOrder, RegimeState
 from telegram.constants import ParseMode
 
 
@@ -39,28 +38,26 @@ from telegram.constants import ParseMode
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-def _position(**overrides) -> Position:
+def _state(on: bool = True, close: float = 204.12, sma: float = 203.50) -> RegimeState:
+    return RegimeState(on=on, context={
+        "close": close, "sma_200": sma,
+        "lower_band": sma * 0.98, "upper_band": sma * 1.02,
+        "was_held": on, "reason": "held" if on else "flat",
+    })
+
+
+def _order(**overrides) -> RebalanceOrder:
     defaults = dict(
-        symbol="NVDA", entry_price=100.0, shares=10,
-        stop_loss=95.0, trailing_stop=95.0, take_profit=110.0,
-        entry_date=date(2025, 1, 15),
+        symbol="NVDA", side="buy", notional=125.0,
+        reason="regime_entry", increases_exposure=True,
     )
-    return Position(**{**defaults, **overrides})
-
-
-def _signal_ctx(**overrides) -> dict:
-    base = dict(
-        close=134.21, ema_50=128.40, rsi=47.3, atr=4.41,
-        rsi_lower_bound=40, rsi_upper_bound=55,
-        cond_trend=True, cond_rsi=True, cond_macd=True,
-    )
-    return {**base, **overrides}
+    return RebalanceOrder(**{**defaults, **overrides})
 
 
 def _mock_bot() -> MagicMock:
     bot = MagicMock()
     bot.send_message = AsyncMock()
-    bot.get_updates  = AsyncMock(return_value=[])
+    bot.get_updates = AsyncMock(return_value=[])
     return bot
 
 
@@ -68,95 +65,104 @@ def _summary(**overrides) -> WeeklySummary:
     base = dict(
         period_start=date(2026, 6, 2),
         period_end=date(2026, 6, 8),
-        trades_closed=0,
-        wins=0,
-        losses=0,
-        net_pnl_dollars=0.0,
-        open_symbols=[],
-        signals=0,
+        sleeves_on=[],
+        sleeves_off=[],
+        orders_filled=0,
+        orders_failed=0,
+        notional_bought=0.0,
+        notional_sold=0.0,
     )
     return WeeklySummary(**{**base, **overrides})
 
 
 def _mock_update(text: str, uid: int = 100) -> MagicMock:
     upd = MagicMock()
-    upd.update_id    = uid
+    upd.update_id = uid
     upd.message.text = text
     return upd
 
 
 # ---------------------------------------------------------------------------
-# _fmt_signal
+# _fmt_rebalance_plan
 # ---------------------------------------------------------------------------
 
-class TestFmtSignal:
-    def test_contains_symbol(self):
-        assert "NVDA" in _fmt_signal("NVDA", _signal_ctx())
+class TestFmtRebalancePlan:
+    def test_lists_every_sleeve(self):
+        states = {"NVDA": _state(True), "ASML": _state(False, 1629.0, 1705.0)}
+        text = _fmt_rebalance_plan([], states, 1000.0)
+        assert "NVDA" in text and "ASML" in text
 
-    def test_contains_price_and_rsi(self):
-        msg = _fmt_signal("NVDA", _signal_ctx(close=134.21, rsi=47.3))
-        assert "134.21" in msg
-        assert "47.3" in msg
+    def test_marks_on_and_off_sleeves_differently(self):
+        states = {"NVDA": _state(True), "ASML": _state(False)}
+        text = _fmt_rebalance_plan([], states, 1000.0)
+        assert "●" in text and "○" in text
 
-    def test_contains_yes_no_prompt(self):
-        msg = _fmt_signal("NVDA", _signal_ctx())
-        assert "YES" in msg
-        assert "NO" in msg
+    def test_shows_close_and_sma(self):
+        text = _fmt_rebalance_plan([], {"NVDA": _state(True, 204.12, 203.50)}, 1000.0)
+        assert "204.12" in text and "203.50" in text
 
-    def test_shows_sl_and_tp_when_present(self):
-        msg = _fmt_signal("NVDA", _signal_ctx(stop_loss=128.0, take_profit=145.0))
-        assert "128.00" in msg
-        assert "145.00" in msg
+    def test_shows_equity(self):
+        text = _fmt_rebalance_plan([], {"NVDA": _state()}, 1234.56)
+        assert "1,234.56" in text
 
-    def test_shows_dash_when_sl_tp_absent(self):
-        msg = _fmt_signal("NVDA", _signal_ctx())
-        assert "—" in msg
+    def test_no_orders_says_no_changes(self):
+        text = _fmt_rebalance_plan([], {"NVDA": _state()}, 1000.0)
+        assert "no changes needed" in text
 
-    def test_uses_html_bold_for_symbol(self):
-        msg = _fmt_signal("AAPL", _signal_ctx())
-        assert "<b>" in msg and "AAPL" in msg
+    def test_asks_for_yes_when_increases_present(self):
+        text = _fmt_rebalance_plan([_order()], {"NVDA": _state()}, 1000.0)
+        assert "YES" in text and "1 increase" in text
 
-    def test_rsi_bounds_shown(self):
-        msg = _fmt_signal("NVDA", _signal_ctx(rsi_lower_bound=40, rsi_upper_bound=55))
-        assert "40" in msg
-        assert "55" in msg
+    def test_no_ask_when_only_reductions(self):
+        sell = _order(side="sell", reason="regime_exit", increases_exposure=False)
+        text = _fmt_rebalance_plan([sell], {"NVDA": _state()}, 1000.0)
+        assert "Nothing to reply to" in text or "nothing to reply to" in text.lower()
+
+    def test_reductions_flagged_as_automatic(self):
+        sell = _order(side="sell", reason="regime_exit", increases_exposure=False)
+        text = _fmt_rebalance_plan([sell], {"NVDA": _state()}, 1000.0)
+        assert "automatically" in text
+
+    def test_totals_the_increases(self):
+        orders = [_order(notional=100.0), _order(symbol="MSFT", notional=50.0)]
+        text = _fmt_rebalance_plan(orders, {"NVDA": _state()}, 1000.0)
+        assert "150.00" in text
+
+    def test_handles_sleeve_with_missing_context(self):
+        states = {"NVDA": RegimeState(on=False, context={"skip_reason": "sma_200_nan"})}
+        text = _fmt_rebalance_plan([], states, 1000.0)
+        assert "no data" in text
 
 
 # ---------------------------------------------------------------------------
-# _fmt_exit
+# _fmt_rebalance_result
 # ---------------------------------------------------------------------------
 
-class TestFmtExit:
-    def test_profit_uses_green_icon(self):
-        assert "✅" in _fmt_exit("NVDA", _position(entry_price=100.0), "tp", 110.0)
+class TestFmtRebalanceResult:
+    def _result(self, status: str) -> dict:
+        return {"symbol": "NVDA", "side": "buy", "notional": 125.0, "status": status}
 
-    def test_loss_uses_red_icon(self):
-        assert "🔴" in _fmt_exit("NVDA", _position(entry_price=100.0), "sl", 94.0)
+    def test_empty_results_says_none_required(self):
+        assert "No orders were required" in _fmt_rebalance_result([])
 
-    def test_pnl_dollars_computed_correctly(self):
-        # (110 - 100) * 10 shares = +$100 — format is $+100.00
-        msg = _fmt_exit("NVDA", _position(entry_price=100.0, shares=10), "tp", 110.0)
-        assert "$+100.00" in msg
+    def test_success_uses_check_icon(self):
+        assert "✅" in _fmt_rebalance_result([self._result("filled")])
 
-    def test_exit_reason_hard_stop(self):
-        assert "Hard stop-loss" in _fmt_exit("NVDA", _position(), "sl", 95.0)
+    def test_failure_uses_alarm_icon(self):
+        assert "🚨" in _fmt_rebalance_result([self._result("failed")])
 
-    def test_exit_reason_trailing(self):
-        assert "Trailing stop" in _fmt_exit("NVDA", _position(), "trailing", 97.0)
+    def test_failure_is_called_out(self):
+        assert "FAILED" in _fmt_rebalance_result([self._result("failed")])
 
-    def test_exit_reason_tp(self):
-        assert "Take-profit" in _fmt_exit("NVDA", _position(), "tp", 110.0)
+    def test_counts_each_status(self):
+        text = _fmt_rebalance_result([
+            self._result("filled"), self._result("failed"), self._result("skipped"),
+        ])
+        assert "filled 1" in text and "failed 1" in text and "skipped 1" in text
 
-    def test_exit_reason_day5(self):
-        assert "Day-5" in _fmt_exit("NVDA", _position(), "day5", 102.0)
-
-    def test_unknown_reason_falls_back_to_raw(self):
-        assert "Manual close" in _fmt_exit("NVDA", _position(), "manual", 100.0)
-
-    def test_contains_entry_and_exit_price(self):
-        msg = _fmt_exit("NVDA", _position(entry_price=100.0), "tp", 110.0)
-        assert "100.00" in msg
-        assert "110.00" in msg
+    def test_lists_symbol_and_notional(self):
+        text = _fmt_rebalance_result([self._result("filled")])
+        assert "NVDA" in text and "125.00" in text
 
 
 # ---------------------------------------------------------------------------
@@ -165,96 +171,70 @@ class TestFmtExit:
 
 class TestFmtError:
     def test_contains_error_text(self):
-        msg = _fmt_error(ValueError("something broke"))
-        assert "something broke" in msg
+        assert "boom" in _fmt_error(ValueError("boom"))
 
     def test_contains_error_header(self):
-        assert "ERROR" in _fmt_error("timeout")
+        assert "ERROR" in _fmt_error("x")
 
     def test_accepts_plain_string(self):
-        assert "network timeout" in _fmt_error("network timeout")
+        assert "plain failure" in _fmt_error("plain failure")
 
     def test_escapes_html_special_chars(self):
-        msg = _fmt_error("value < 0 & flag > limit")
-        assert "<" not in msg.split("<pre>")[1].split("</pre>")[0]
-        assert "&lt;" in msg or "value" in msg  # escaped
+        text = _fmt_error("a < b & c > d")
+        assert "&lt;" in text and "&amp;" in text
 
 
 # ---------------------------------------------------------------------------
-# _fmt_execution
-# ---------------------------------------------------------------------------
-
-class TestFmtExecution:
-    def test_contains_symbol(self):
-        order = {"filled_avg_price": 134.0, "filled_qty": 10}
-        assert "NVDA" in _fmt_execution("NVDA", order, _position())
-
-    def test_shows_fill_price(self):
-        order = {"filled_avg_price": 134.50, "filled_qty": 10}
-        assert "134.50" in _fmt_execution("NVDA", order, _position())
-
-    def test_falls_back_to_position_when_order_empty(self):
-        pos = _position(entry_price=100.0, shares=5)
-        msg = _fmt_execution("NVDA", {}, pos)
-        assert "100.00" in msg
-        assert "5" in msg
-
-
-# ---------------------------------------------------------------------------
-# send_* functions — verify bot.send_message is called with HTML mode
+# send_* functions
 # ---------------------------------------------------------------------------
 
 class TestSendFunctions:
-    def test_send_signal_alert_calls_send_message(self):
+    def test_send_rebalance_plan_calls_send_message(self):
         bot = _mock_bot()
         with patch.object(notifier, "_bot", bot):
-            send_signal_alert("NVDA", _signal_ctx())
-        bot.send_message.assert_called_once()
-        assert "NVDA" in bot.send_message.call_args.kwargs["text"]
+            assert send_rebalance_plan([_order()], {"NVDA": _state()}, 1000.0) is True
+        bot.send_message.assert_awaited_once()
 
-    def test_send_execution_alert_calls_send_message(self):
+    def test_send_rebalance_result_calls_send_message(self):
         bot = _mock_bot()
         with patch.object(notifier, "_bot", bot):
-            send_execution_alert("NVDA", {"filled_avg_price": 134.0, "filled_qty": 10}, _position())
-        bot.send_message.assert_called_once()
-
-    def test_send_exit_alert_calls_send_message(self):
-        bot = _mock_bot()
-        with patch.object(notifier, "_bot", bot):
-            send_exit_alert("NVDA", _position(), "tp", 110.0)
-        bot.send_message.assert_called_once()
+            assert send_rebalance_result([]) is True
+        bot.send_message.assert_awaited_once()
 
     def test_send_error_alert_calls_send_message(self):
         bot = _mock_bot()
         with patch.object(notifier, "_bot", bot):
-            send_error_alert("crash")
-        bot.send_message.assert_called_once()
+            assert send_error_alert("bad") is True
+        bot.send_message.assert_awaited_once()
 
     def test_all_sends_use_html_parse_mode(self):
         bot = _mock_bot()
         with patch.object(notifier, "_bot", bot):
-            send_signal_alert("NVDA", _signal_ctx())
-        assert bot.send_message.call_args.kwargs.get("parse_mode") == ParseMode.HTML
+            send_rebalance_plan([], {"NVDA": _state()}, 1000.0)
+            send_rebalance_result([])
+            send_error_alert("x")
+            send_weekly_summary(_summary(), 1000.0)
+        for call in bot.send_message.await_args_list:
+            assert call.kwargs["parse_mode"] == ParseMode.HTML
 
 
 # ---------------------------------------------------------------------------
-# send_error_alert — must never raise
+# Failure tolerance — hard rule 3
 # ---------------------------------------------------------------------------
 
-class TestSendErrorAlertNeverRaises:
-    def test_does_not_raise_when_bot_unreachable(self):
+class TestSendsNeverRaise:
+    @pytest.mark.parametrize("send", [
+        lambda: send_rebalance_plan([_order()], {"NVDA": _state()}, 1000.0),
+        lambda: send_rebalance_result([{"symbol": "NVDA", "side": "buy",
+                                        "notional": 1.0, "status": "filled"}]),
+        lambda: send_error_alert("x"),
+        lambda: send_weekly_summary(_summary(), None),
+    ])
+    def test_returns_false_when_bot_unreachable(self, send):
         bot = MagicMock()
-        bot.send_message = AsyncMock(side_effect=Exception("Telegram down"))
-        bot.get_updates  = AsyncMock(return_value=[])
+        bot.send_message = AsyncMock(side_effect=RuntimeError("network down"))
         with patch.object(notifier, "_bot", bot):
-            send_error_alert(RuntimeError("something crashed"))   # must not raise
-
-    def test_does_not_raise_for_plain_string(self):
-        bot = MagicMock()
-        bot.send_message = AsyncMock(side_effect=ConnectionError("no network"))
-        bot.get_updates  = AsyncMock(return_value=[])
-        with patch.object(notifier, "_bot", bot):
-            send_error_alert("plain error string")                # must not raise
+            assert send() is False
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +247,7 @@ class TestListenForReply:
         updates = [_mock_update(t, uid=i + 1) for i, t in enumerate(texts)]
         bot = MagicMock()
         bot.send_message = AsyncMock()
-        bot.get_updates  = AsyncMock(side_effect=[[], updates])
+        bot.get_updates = AsyncMock(side_effect=[[], updates])
         return bot
 
     def test_returns_true_for_yes(self):
@@ -289,7 +269,7 @@ class TestListenForReply:
     def test_ignores_unrecognised_messages(self):
         bot = MagicMock()
         bot.send_message = AsyncMock()
-        bot.get_updates  = AsyncMock(side_effect=[
+        bot.get_updates = AsyncMock(side_effect=[
             [],
             [_mock_update("maybe", uid=1), _mock_update("NO", uid=2)],
         ])
@@ -299,18 +279,18 @@ class TestListenForReply:
     def test_returns_none_on_timeout(self):
         bot = MagicMock()
         bot.send_message = AsyncMock()
-        bot.get_updates  = AsyncMock(return_value=[])
+        bot.get_updates = AsyncMock(return_value=[])
         with patch.object(notifier, "_bot", bot):
             assert listen_for_reply(0) is None
 
     def test_drains_old_messages_before_listening(self):
-        """A YES present before the alert was sent must not approve the trade."""
+        """A YES present before the plan was sent must not approve this week."""
         old_yes = _mock_update("YES", uid=50)
-        new_no  = _mock_update("NO",  uid=51)
+        new_no = _mock_update("NO", uid=51)
         bot = MagicMock()
         bot.send_message = AsyncMock()
         # drain returns old YES → offset advances to 51; poll returns new NO
-        bot.get_updates  = AsyncMock(side_effect=[[old_yes], [new_no]])
+        bot.get_updates = AsyncMock(side_effect=[[old_yes], [new_no]])
         with patch.object(notifier, "_bot", bot):
             assert listen_for_reply(30) is False
 
@@ -318,11 +298,11 @@ class TestListenForReply:
         """Non-message updates (e.g. edited messages) must not crash the loop."""
         no_msg = MagicMock()
         no_msg.update_id = 1
-        no_msg.message   = None
-        real   = _mock_update("YES", uid=2)
+        no_msg.message = None
+        real = _mock_update("YES", uid=2)
         bot = MagicMock()
         bot.send_message = AsyncMock()
-        bot.get_updates  = AsyncMock(side_effect=[[], [no_msg, real]])
+        bot.get_updates = AsyncMock(side_effect=[[], [no_msg, real]])
         with patch.object(notifier, "_bot", bot):
             assert listen_for_reply(30) is True
 
@@ -332,56 +312,35 @@ class TestListenForReply:
 # ---------------------------------------------------------------------------
 
 class TestWeeklySummary:
-    def test_quiet_week_renders_running_and_zeros(self):
+    def test_quiet_week_renders_running(self):
         text = _fmt_weekly(_summary(), equity=100_000.0)
         assert "✅ Running" in text
-        assert "$100,000.00" in text
-        assert "Open     : none" in text
-        assert "Closed   : 0 trades" in text
-        assert "Signals  : 0" in text
+        assert "none" in text
 
-    def test_active_week_shows_win_loss_and_net(self):
+    def test_lists_invested_and_cash_sleeves(self):
         text = _fmt_weekly(
-            _summary(trades_closed=3, wins=2, losses=1, net_pnl_dollars=240.0,
-                     open_symbols=["NVDA", "AMD"], signals=4),
-            equity=101_240.0,
-        )
-        assert "NVDA, AMD" in text
-        assert "3 trades  (2W / 1L)  $+240.00" in text
-        assert "Signals  : 4" in text
+            _summary(sleeves_on=["NVDA", "MSFT"], sleeves_off=["ASML"]), 1000.0)
+        assert "NVDA, MSFT" in text and "ASML" in text
 
-    def test_negative_net_pnl_keeps_sign(self):
+    def test_active_week_shows_order_counts_and_notional(self):
         text = _fmt_weekly(
-            _summary(trades_closed=1, wins=0, losses=1, net_pnl_dollars=-55.5),
-            equity=99_944.5,
-        )
-        assert "$-55.50" in text
+            _summary(orders_filled=3, orders_failed=1,
+                     notional_bought=250.0, notional_sold=125.0), 1000.0)
+        assert "3 filled / 1 failed" in text
+        assert "375.00" in text
 
     def test_unavailable_equity_is_flagged(self):
-        text = _fmt_weekly(_summary(), equity=None)
-        assert "unavailable" in text
+        assert "unavailable" in _fmt_weekly(_summary(), equity=None)
 
     def test_same_month_header_drops_repeated_month(self):
-        text = _fmt_weekly(_summary(), equity=100_000.0)
-        assert "Jun 02–08" in text
+        assert "Jun 02–08" in _fmt_weekly(_summary(), 1.0)
 
     def test_cross_month_header_keeps_both_months(self):
-        text = _fmt_weekly(
-            _summary(period_start=date(2026, 5, 28), period_end=date(2026, 6, 3)),
-            equity=100_000.0,
-        )
-        assert "May 28–Jun 03" in text
+        s = _summary(period_start=date(2026, 5, 28), period_end=date(2026, 6, 3))
+        assert "May 28–Jun 03" in _fmt_weekly(s, 1.0)
 
     def test_send_weekly_summary_calls_send_message_html(self):
         bot = _mock_bot()
         with patch.object(notifier, "_bot", bot):
-            send_weekly_summary(_summary(), 100_000.0)
-        bot.send_message.assert_called_once()
-        assert bot.send_message.call_args.kwargs.get("parse_mode") == ParseMode.HTML
-
-    def test_send_weekly_summary_never_raises(self):
-        bot = MagicMock()
-        bot.send_message = AsyncMock(side_effect=Exception("Telegram down"))
-        bot.get_updates  = AsyncMock(return_value=[])
-        with patch.object(notifier, "_bot", bot):
-            send_weekly_summary(_summary(), None)   # must not raise
+            assert send_weekly_summary(_summary(), 1000.0) is True
+        assert bot.send_message.await_args.kwargs["parse_mode"] == ParseMode.HTML

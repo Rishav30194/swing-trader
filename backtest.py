@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-backtest.py — Swing strategy backtester.
+backtest.py — Regime-overlay backtester.
 
-Fetches historical OHLCV data from Alpaca, simulates the full strategy
-using our production modules, and prints a performance report.
+Fetches historical OHLCV data from Alpaca and simulates the strategy by calling
+the SAME functions main.py calls: compute_regime_state, compute_target_weights,
+diff_to_orders. Nothing about the strategy is reimplemented here, so a passing
+backtest validates the production code rather than a parallel copy of it. The
+previous strategy failed partly because the live path and the backtest path
+disagreed about which bar to evaluate; sharing portfolio.py removes that class
+of bug entirely.
 
-Why not backtrader (which is listed in the implementation spec)?
-Backtrader requires re-implementing strategy logic inside a bt.Strategy
-class. Duplicating indicators.py + signals.py + risk.py into a parallel
-framework introduces divergence risk — the backtest could pass while the
-live code contains a different bug. A direct pandas simulation calls the
-exact same functions the live scheduler calls, so a passing backtest
-actually validates the production code.
+Execution convention (matches live):
+  Regime is evaluated on a completed daily close; orders fill at the NEXT
+  session's open. Rebalances happen every `--rebalance` trading days.
 
 Usage:
-    python backtest.py                                         # 2022-2024
+    python backtest.py                                        # full history
     python backtest.py --start 2022-01-01 --end 2022-12-31    # bear market
-    python backtest.py --start 2023-01-01 --end 2024-12-31    # bull market
-    python backtest.py --equity 50000                         # custom capital
+    python backtest.py --band 0.0 --rebalance 1               # daily, no band
+    python backtest.py --benchmark                            # vs buy & hold
 
 Requirements:
     .env with ALPACA_API_KEY and ALPACA_API_SECRET
@@ -27,8 +28,8 @@ import argparse
 import logging
 import pickle
 import sys
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -37,18 +38,17 @@ import pandas as pd
 from src.config import settings
 from src.data import get_historical_bars
 from src.indicators import compute_indicators
-from src.signals import evaluate_buy_signal
-from src.risk import (
-    Position,
-    compute_exit_levels,
-    compute_position_size,
-    update_trailing_stop,
-    check_exit_conditions,
+from src.portfolio import (
+    compute_regime_state,
+    compute_target_weights,
+    diff_to_orders,
+    validate_target_weights,
 )
 
 logging.basicConfig(level=logging.WARNING)
 
 _CACHE_DIR = Path(__file__).parent / "data" / "cache"
+_TRADING_DAYS = 252
 
 
 # ---------------------------------------------------------------------------
@@ -82,49 +82,15 @@ def _save_cache(symbol: str, df: pd.DataFrame) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Trade record
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Trade:
-    symbol:      str
-    entry_date:  date
-    entry_price: float
-    shares:      int
-    stop_loss:   float
-    take_profit: float
-    exit_date:   date  | None = None
-    exit_price:  float | None = None
-    exit_reason: str   | None = None
-
-    @property
-    def pnl_dollars(self) -> float:
-        return (self.exit_price - self.entry_price) * self.shares  # type: ignore[operator]
-
-    @property
-    def pnl_pct(self) -> float:
-        return (self.exit_price - self.entry_price) / self.entry_price * 100  # type: ignore[operator]
-
-    @property
-    def hold_days(self) -> int:
-        return (self.exit_date - self.entry_date).days  # type: ignore[operator]
-
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
 def load_data(symbols: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
     """
-    Fetch and enrich data for each symbol.
+    Fetch and enrich data for each symbol, indexed by trading date.
 
-    Checks a local disk cache first (data/cache/<SYMBOL>_daily.pkl). If the
-    cache was written today and covers the requested start date, it is used
-    directly — no API call. Otherwise data is fetched from Alpaca, indicators
-    are computed, and the result is saved to cache for subsequent runs today.
+    Requests 300 extra calendar days beyond `start` so SMA_200 is converged on
+    the first bar actually simulated — a short warm-up would silently hold every
+    sleeve flat instead of failing loudly.
     """
-    days_needed = (date.today() - start).days + 90  # 90-day indicator warm-up buffer
+    days_needed = (date.today() - start).days + 300
     loaded: dict[str, pd.DataFrame] = {}
 
     for symbol in symbols:
@@ -142,11 +108,10 @@ def load_data(symbols: list[str], start: date, end: date) -> dict[str, pd.DataFr
                 print(f"FAILED — {exc}")
                 continue
 
-        in_window = (
-            (df["timestamp"].dt.date >= start) &
-            (df["timestamp"].dt.date <= end)
-        ).sum()
-        loaded[symbol] = df
+        df = df.copy()
+        df["date"] = df["timestamp"].dt.date
+        in_window = ((df["date"] >= start) & (df["date"] <= end)).sum()
+        loaded[symbol] = df.set_index("date")
         print(f"{in_window} trading days  ({start} → {end})")
 
     return loaded
@@ -156,237 +121,214 @@ def load_data(symbols: list[str], start: date, end: date) -> dict[str, pd.DataFr
 # Simulation
 # ---------------------------------------------------------------------------
 
+@dataclass
+class SimResult:
+    equity: pd.Series
+    orders: list[dict] = field(default_factory=list)
+    invested_pct: float = 0.0
+    turnover_per_year: float = 0.0
+
+
 def run_simulation(
-    data:           dict[str, pd.DataFrame],
-    start:          date,
-    end:            date,
+    data: dict[str, pd.DataFrame],
+    start: date,
+    end: date,
     initial_equity: float,
-) -> tuple[list[Trade], pd.Series]:
+    *,
+    band: float,
+    rebalance_days: int,
+    cost_bps: float,
+) -> SimResult:
     """
-    Walk forward bar by bar across all symbols.
+    Walk forward, rebalancing every `rebalance_days` trading days.
 
-    Entry: signal fires on bar close → enter at that bar's close price.
-    Exit:  not checked on entry bar; from the next bar onward, check
-           bar low vs stops and bar high vs take-profit.
-
-    Returns:
-        (completed_trades, daily_equity_series)
+    Regime is read from the bar at index i (a completed close) and the resulting
+    orders fill at bar i+1's open — the same one-bar lag the live scheduler has.
     """
-    equity = initial_equity
-    open_positions: list[tuple[Position, Trade]] = []
-    completed:      list[Trade]                  = []
-    daily_equity:   dict[date, float]            = {}
+    symbols = sorted(data)
+    dates = sorted({d for df in data.values() for d in df.index if start <= d <= end})
+    cost = cost_bps / 10_000.0
 
-    all_dates = sorted({
-        ts.date()
-        for df in data.values()
-        for ts in df["timestamp"]
-        if start <= ts.date() <= end
+    cash = initial_equity
+    shares = {s: 0.0 for s in symbols}
+    regime = {s: False for s in symbols}
+    curve: dict[date, float] = {}
+    orders_log: list[dict] = []
+    invested_samples: list[float] = []
+    traded_notional = 0.0
+
+    for i, today in enumerate(dates):
+        prior = dates[i - 1] if i else None
+
+        if prior is not None and i % rebalance_days == 0:
+            equity = cash + sum(
+                shares[s] * _px(data[s], today, "open") for s in symbols
+                if today in data[s].index
+            )
+            states = {}
+            for s in symbols:
+                if prior not in data[s].index:
+                    continue
+                row = data[s].loc[[prior]]
+                states[s] = compute_regime_state(
+                    row, band=band, currently_held=regime[s])
+
+            if states and equity > 0:
+                weights = compute_target_weights(
+                    states,
+                    universe_size=len(symbols),
+                    max_position_pct=settings.max_position_pct,
+                )
+                validate_target_weights(
+                    weights, states, max_position_pct=settings.max_position_pct)
+
+                current = {
+                    s: shares[s] * _px(data[s], today, "open")
+                    for s in symbols if today in data[s].index
+                }
+                plan = diff_to_orders(
+                    current, weights, equity,
+                    min_order_notional=settings.min_order_notional,
+                    drift_tolerance=settings.drift_tolerance,
+                )
+                for order in plan:
+                    price = _px(data[order.symbol], today, "open")
+                    if price <= 0:
+                        continue
+                    qty = order.notional / price
+                    if order.side == "buy":
+                        cash -= order.notional * (1 + cost)
+                        shares[order.symbol] += qty
+                    else:
+                        cash += order.notional * (1 - cost)
+                        shares[order.symbol] = max(0.0, shares[order.symbol] - qty)
+                    traded_notional += order.notional
+                    orders_log.append({
+                        "date": today, "symbol": order.symbol, "side": order.side,
+                        "notional": order.notional, "reason": order.reason,
+                    })
+
+                for s, st in states.items():
+                    regime[s] = st.on
+
+        mtm = sum(
+            shares[s] * _px(data[s], today, "close") for s in symbols
+            if today in data[s].index
+        )
+        total = cash + mtm
+        curve[today] = total
+        invested_samples.append(mtm / total if total > 0 else 0.0)
+
+    years = max(len(dates) / _TRADING_DAYS, 1e-9)
+    return SimResult(
+        equity=pd.Series(curve),
+        orders=orders_log,
+        invested_pct=float(np.mean(invested_samples)) * 100 if invested_samples else 0.0,
+        turnover_per_year=traded_notional / initial_equity / years,
+    )
+
+
+def buy_and_hold(
+    data: dict[str, pd.DataFrame], start: date, end: date, initial_equity: float,
+) -> pd.Series:
+    """Equal-weight buy & hold benchmark, bought once at the first available open."""
+    symbols = sorted(data)
+    dates = sorted({d for df in data.values() for d in df.index if start <= d <= end})
+    per = initial_equity / len(symbols)
+    shares = {}
+    for s in symbols:
+        first = next((d for d in dates if d in data[s].index), None)
+        shares[s] = per / _px(data[s], first, "open") if first else 0.0
+    return pd.Series({
+        d: sum(shares[s] * _px(data[s], d, "close")
+               for s in symbols if d in data[s].index)
+        for d in dates
     })
 
-    for current_date in all_dates:
 
-        # --- 1. Check exits for open positions --------------------------------
-        still_open: list[tuple[Position, Trade]] = []
-
-        for pos, trade in open_positions:
-            df    = data[pos.symbol]
-            today = df[df["timestamp"].dt.date == current_date]
-
-            if today.empty or current_date == pos.entry_date:
-                still_open.append((pos, trade))
-                continue
-
-            bar = today.iloc[0]
-
-            # Check exits against the trailing stop as it stood at bar open,
-            # then update it using bar close for the next bar. Reversing this
-            # order would be look-ahead: the close occurs after the intraday
-            # low, so raising the stop with close before checking the low
-            # can trigger exits that never would have fired in reality.
-            reason = check_exit_conditions(pos, bar)
-            if reason:
-                trade.exit_date   = current_date
-                trade.exit_price  = _fill_price(pos, bar, reason)
-                trade.exit_reason = reason
-                equity += trade.pnl_dollars
-                completed.append(trade)
-            else:
-                if not pd.isna(bar["ATR_14"]):
-                    pos.trailing_stop = update_trailing_stop(
-                        pos, float(bar["close"]), float(bar["ATR_14"]),
-                        atr_stop_multiplier=settings.atr_stop_multiplier,
-                        atr_trailing_activation=settings.atr_trailing_activation,
-                    )
-                still_open.append((pos, trade))
-
-        open_positions = still_open
-        daily_equity[current_date] = equity
-
-        # --- 2. Scan for new entries ------------------------------------------
-        if len(open_positions) >= settings.max_open_positions:
-            continue
-
-        open_symbols = {pos.symbol for pos, _ in open_positions}
-
-        for symbol, df in data.items():
-            if len(open_positions) >= settings.max_open_positions:
-                break
-            if symbol in open_symbols:
-                continue
-
-            rows = df[df["timestamp"].dt.date <= current_date]
-            if len(rows) < 2:
-                continue
-            if rows.iloc[-1]["timestamp"].date() != current_date:
-                continue  # no bar for this symbol today
-
-            signal = evaluate_buy_signal(
-                rows,
-                rsi_lower_bound=settings.rsi_lower_bound,
-                rsi_upper_bound=settings.rsi_upper_bound,
-            )
-            if not signal.triggered:
-                continue
-
-            entry_price = float(rows.iloc[-1]["close"])
-            atr         = signal.context["atr"]
-
-            try:
-                levels = compute_exit_levels(
-                    entry_price, atr,
-                    atr_stop_multiplier=settings.atr_stop_multiplier,
-                    atr_tp_multiplier=settings.atr_tp_multiplier,
-                )
-            except ValueError:
-                continue
-
-            shares = compute_position_size(
-                equity, settings.risk_per_trade_pct, entry_price, levels.stop_loss,
-            )
-            if shares == 0:
-                continue
-
-            pos = Position(
-                symbol=symbol,
-                entry_price=entry_price,
-                shares=shares,
-                stop_loss=levels.stop_loss,
-                trailing_stop=levels.stop_loss,
-                take_profit=levels.take_profit,
-                entry_date=current_date,
-            )
-            trade = Trade(
-                symbol=symbol,
-                entry_date=current_date,
-                entry_price=entry_price,
-                shares=shares,
-                stop_loss=levels.stop_loss,
-                take_profit=levels.take_profit,
-            )
-            open_positions.append((pos, trade))
-
-    # --- Force-close positions still open at backtest end --------------------
-    for pos, trade in open_positions:
-        df       = data[pos.symbol]
-        last_bar = df[df["timestamp"].dt.date <= end].iloc[-1]
-        trade.exit_date   = last_bar["timestamp"].date()
-        trade.exit_price  = float(last_bar["close"])
-        trade.exit_reason = "end_of_backtest"
-        equity += trade.pnl_dollars
-        completed.append(trade)
-
-    return completed, pd.Series(daily_equity)
-
-
-def _fill_price(pos: Position, bar: pd.Series, reason: str) -> float:
-    """Assumed fill price for an exit. Fills exactly at the trigger level."""
-    if reason == "sl":
-        return pos.stop_loss
-    if reason == "trailing":
-        return pos.trailing_stop
-    if reason == "tp":
-        return pos.take_profit
-    return float(bar["close"])
+def _px(df: pd.DataFrame, when: date | None, field_name: str) -> float:
+    if when is None or when not in df.index:
+        return 0.0
+    value = df.loc[when, field_name]
+    return float(value) if not pd.isna(value) else 0.0
 
 
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
-def print_report(
-    trades:         list[Trade],
-    equity:         pd.Series,
-    initial_equity: float,
-    start:          date,
-    end:            date,
-) -> None:
-    closed = [t for t in trades if t.exit_price is not None]
+def _stats(equity: pd.Series, initial: float) -> dict:
+    eq = equity.dropna()
+    if len(eq) < 2:
+        return {}
+    rets = eq.pct_change().dropna()
+    years = len(eq) / _TRADING_DAYS
+    cagr = (eq.iloc[-1] / initial) ** (1 / years) - 1 if years > 0 else 0.0
+    sharpe = (rets.mean() / rets.std() * np.sqrt(_TRADING_DAYS)
+              if rets.std() > 0 else 0.0)
+    max_dd = ((eq - eq.cummax()) / eq.cummax()).min()
+    return {
+        "final": eq.iloc[-1],
+        "total_return": (eq.iloc[-1] - initial) / initial * 100,
+        "cagr": cagr * 100,
+        "sharpe": sharpe,
+        "max_dd": max_dd * 100,
+        "mar": cagr / abs(max_dd) if max_dd else float("nan"),
+    }
 
-    if not closed:
-        print("\n  No trades executed in this period.\n")
+
+def print_report(
+    result: SimResult,
+    initial_equity: float,
+    start: date,
+    end: date,
+    benchmark: pd.Series | None = None,
+) -> None:
+    s = _stats(result.equity, initial_equity)
+    if not s:
+        print("\n  Not enough data to report.\n")
         return
 
-    n       = len(closed)
-    winners = [t for t in closed if t.pnl_dollars > 0]
-    losers  = [t for t in closed if t.pnl_dollars <= 0]
-
-    win_rate     = len(winners) / n * 100
-    avg_hold     = sum(t.hold_days for t in closed) / n
-    total_return = (equity.iloc[-1] - initial_equity) / initial_equity * 100
-
-    gross_profit  = sum(t.pnl_dollars for t in winners) if winners else 0.0
-    gross_loss    = abs(sum(t.pnl_dollars for t in losers)) if losers else 0.0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-
-    best  = max(closed, key=lambda t: t.pnl_pct)
-    worst = min(closed, key=lambda t: t.pnl_pct)
-
-    daily_returns = equity.pct_change().dropna()
-    sharpe = (
-        daily_returns.mean() / daily_returns.std() * np.sqrt(252)
-        if daily_returns.std() > 0 else 0.0
-    )
-
-    rolling_max = equity.cummax()
-    max_dd      = ((equity - rolling_max) / rolling_max).min() * 100
-
-    reasons: dict[str, int] = {}
-    for t in closed:
-        reasons[t.exit_reason] = reasons.get(t.exit_reason, 0) + 1  # type: ignore[index]
-
-    W = 58
+    W = 62
     print("\n" + "=" * W)
-    print("  SWING TRADER BACKTEST REPORT")
+    print("  REGIME OVERLAY BACKTEST REPORT")
     print(f"  {start}  →  {end}")
     print("=" * W)
     print(f"  Initial equity       : ${initial_equity:>12,.2f}")
-    print(f"  Final equity         : ${equity.iloc[-1]:>12,.2f}")
-    print(f"  Total return         : {total_return:>+11.2f}%")
-    print(f"  Sharpe ratio         : {sharpe:>12.3f}")
-    print(f"  Max drawdown         : {max_dd:>11.2f}%")
+    print(f"  Final equity         : ${s['final']:>12,.2f}")
+    print(f"  Total return         : {s['total_return']:>+11.2f}%")
+    print(f"  CAGR                 : {s['cagr']:>+11.2f}%")
+    print(f"  Sharpe ratio         : {s['sharpe']:>12.2f}")
+    print(f"  Max drawdown         : {s['max_dd']:>11.2f}%")
+    print(f"  MAR (CAGR/maxDD)     : {s['mar']:>12.2f}")
     print("-" * W)
-    print(f"  Total trades         : {n:>12}")
-    print(f"  Win rate             : {win_rate:>11.1f}%")
-    print(f"  Avg hold (days)      : {avg_hold:>12.1f}")
-    print(f"  Profit factor        : {profit_factor:>12.2f}")
-    print("-" * W)
-    print(f"  Best  trade : {best.symbol}  {best.pnl_pct:>+.2f}%  (entered {best.entry_date})")
-    print(f"  Worst trade : {worst.symbol}  {worst.pnl_pct:>+.2f}%  (entered {worst.entry_date})")
-    print("-" * W)
-    print("  Exit reasons:")
-    for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
-        bar_fill = "█" * int(count / n * 24)
-        print(f"    {reason:<24}: {count:>3}  {bar_fill}")
-    print("=" * W)
-    print("\n  Phase 2 gate  (Sharpe > 0.5 and max drawdown < 25%):")
-    sharpe_ok = sharpe > 0.5
-    dd_ok     = max_dd > -25.0
-    print(f"    Sharpe > 0.5     : {'PASS' if sharpe_ok else 'FAIL'}  ({sharpe:.3f})")
-    print(f"    Max DD < 25%     : {'PASS' if dd_ok     else 'FAIL'}  ({max_dd:.2f}%)")
-    gate = "PASS — ready for Phase 3" if (sharpe_ok and dd_ok) else "FAIL — do not proceed"
-    print(f"    Verdict          : {gate}")
-    print()
+    print(f"  Rebalance orders     : {len(result.orders):>12}")
+    print(f"  Turnover             : {result.turnover_per_year:>11.1f}x/yr")
+    print(f"  Time invested        : {result.invested_pct:>11.1f}%")
+
+    reasons: dict[str, int] = {}
+    for o in result.orders:
+        reasons[o["reason"]] = reasons.get(o["reason"], 0) + 1
+    if reasons:
+        print("-" * W)
+        print("  Order reasons:")
+        for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
+            print(f"    {reason:<20}: {count:>4}")
+
+    if benchmark is not None and len(benchmark) > 1:
+        b = _stats(benchmark, initial_equity)
+        print("-" * W)
+        print("  vs equal-weight buy & hold:")
+        print(f"    {'':<18}{'overlay':>12}{'buy & hold':>14}")
+        print(f"    {'CAGR':<18}{s['cagr']:>11.2f}%{b['cagr']:>13.2f}%")
+        print(f"    {'Sharpe':<18}{s['sharpe']:>12.2f}{b['sharpe']:>14.2f}")
+        print(f"    {'Max drawdown':<18}{s['max_dd']:>11.2f}%{b['max_dd']:>13.2f}%")
+        print(f"    {'MAR':<18}{s['mar']:>12.2f}{b['mar']:>14.2f}")
+        print()
+        print("  Expected shape: lower CAGR, materially shallower drawdown.")
+        print("  This strategy is a drawdown-control device, not an alpha source —")
+        print("  see docs/strategy_validation.md before reading anything else into it.")
+    print("=" * W + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -394,24 +336,34 @@ def print_report(
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Swing strategy backtester")
-    p.add_argument("--start",  default="2022-01-01", help="Start date YYYY-MM-DD")
-    p.add_argument("--end",    default="2024-12-31", help="End date   YYYY-MM-DD")
+    p = argparse.ArgumentParser(description="Regime overlay backtester")
+    p.add_argument("--start", default="2018-11-01", help="Start date YYYY-MM-DD")
+    p.add_argument("--end", default=date.today().isoformat(), help="End date YYYY-MM-DD")
     p.add_argument("--equity", type=float, default=100_000.0,
                    help="Starting equity in USD (default: 100000)")
+    p.add_argument("--band", type=float, default=None,
+                   help=f"Hysteresis band (default: settings value {settings.sma_band})")
+    p.add_argument("--rebalance", type=int, default=5,
+                   help="Trading days between rebalances (default: 5 = weekly)")
+    p.add_argument("--cost-bps", type=float, default=5.0,
+                   help="Per-side cost in basis points (default: 5)")
+    p.add_argument("--benchmark", action="store_true",
+                   help="Also report equal-weight buy & hold")
     return p.parse_args()
 
 
 def main() -> None:
-    args   = _parse_args()
-    start  = date.fromisoformat(args.start)
-    end    = date.fromisoformat(args.end)
-    equity = args.equity
+    args = _parse_args()
+    start = date.fromisoformat(args.start)
+    end = date.fromisoformat(args.end)
+    band = args.band if args.band is not None else settings.sma_band
 
-    print(f"\nSwing Trader Backtest")
-    print(f"  Period   : {start}  →  {end}")
-    print(f"  Symbols  : {', '.join(settings.symbols)}")
-    print(f"  Equity   : ${equity:,.0f}\n")
+    print("\nRegime Overlay Backtest")
+    print(f"  Period    : {start}  →  {end}")
+    print(f"  Symbols   : {', '.join(settings.symbols)}")
+    print(f"  Equity    : ${args.equity:,.0f}")
+    print(f"  Band      : {band:.1%}   Rebalance: every {args.rebalance} trading days")
+    print(f"  Cost      : {args.cost_bps:.1f} bps/side\n")
     print("Loading data:")
 
     data = load_data(list(settings.symbols), start, end)
@@ -420,8 +372,12 @@ def main() -> None:
         sys.exit(1)
 
     print("\nRunning simulation...", flush=True)
-    trades, equity_series = run_simulation(data, start, end, equity)
-    print_report(trades, equity_series, equity, start, end)
+    result = run_simulation(
+        data, start, end, args.equity,
+        band=band, rebalance_days=args.rebalance, cost_bps=args.cost_bps,
+    )
+    bench = buy_and_hold(data, start, end, args.equity) if args.benchmark else None
+    print_report(result, args.equity, start, end, bench)
 
 
 if __name__ == "__main__":

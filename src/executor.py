@@ -146,6 +146,63 @@ def get_account_equity() -> float:
         raise
 
 
+def get_current_holdings() -> dict[str, dict]:
+    """
+    Fetch every open position from Alpaca as {symbol: {shares, notional}}.
+
+    Alpaca is the source of truth for what is held — never the local database
+    (hard rule 7). Re-deriving here means a partially-applied rebalance, a
+    manual trade, or a crash mid-run all self-correct on the next cycle.
+
+    Raises on API failure — the caller must abort the rebalance rather than
+    act on an unknown portfolio state.
+    """
+    try:
+        positions = _client.get_all_positions()
+    except Exception:
+        logger.exception("Failed to fetch current holdings")
+        raise
+
+    holdings = {
+        str(p.symbol): {
+            "shares":   float(p.qty),
+            "notional": float(p.market_value),
+        }
+        for p in positions
+    }
+    logger.info("Current holdings: %s", {s: round(v["notional"], 2) for s, v in holdings.items()})
+    return holdings
+
+
+def place_sell_notional(symbol: str, notional: float, reason: str) -> dict:
+    """
+    Sell a dollar amount of `symbol` — used to trim a sleeve back to target.
+
+    Full sleeve exits should use place_sell_order() with the exact share count
+    instead, so no fractional dust is left behind.
+
+    Raises on submission failure — caller must alert and handle.
+    """
+    _check_mode(symbol, "SELL")
+    logger.info("Submitting SELL notional order: %s  $%.2f  reason=%s", symbol, notional, reason)
+
+    try:
+        order = _client.submit_order(MarketOrderRequest(
+            symbol=symbol,
+            notional=round(notional, 2),
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+        ))
+    except Exception:
+        logger.exception("SELL notional submission failed for %s", symbol)
+        raise
+
+    result = _wait_for_fill(str(order.id))
+    result["reason"] = reason
+    logger.info("SELL complete: %s", result)
+    return result
+
+
 def place_buy_order(symbol: str, notional: float) -> dict:
     """
     Place a notional market buy order and wait for fill confirmation.

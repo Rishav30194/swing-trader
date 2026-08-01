@@ -1,8 +1,24 @@
 # Swing Trader
 
-A personal, automated swing-trading application that executes a disciplined **3-to-5-day hold strategy** on a focused list of high-quality assets. The system scans for high-probability setups using combined technical indicators and manages risk strictly. A human approval gate sits in front of every trade entry.
+A personal, automated portfolio application that holds a fixed basket of assets and manages **exposure** rather than trying to pick winners. Each sleeve is invested only while it trades above its own 200-day average; otherwise its capital sits in cash. One Telegram message a week carries the rebalance plan — increases need approval, reductions happen automatically.
 
-> **Current Status: Phase 3 in progress — all implementation complete. System deployed to VPS, now in paper trading observation period (target ≥ 20 trades).**
+> **Current status: Phase 3R — regime overlay implemented, paper trading restarting.** The original signal strategy was retired on 2026-08-01 after testing showed it had no measurable edge.
+
+**This system does not claim to beat the market.** It trades roughly a third of buy-and-hold's return for half its drawdown. See [Honest performance expectations](#honest-performance-expectations).
+
+---
+
+## Why the strategy was replaced
+
+The original three-condition signal gate (close > EMA_50, RSI 40–55, MACD crossover) ran on a VPS for nine weeks and produced **zero trades**. Investigation found three things:
+
+1. **Two live defects.** A 90-day lookback returned only 61–63 bars, leaving EMA_50 under-converged and reading up to 1.7% too high; and the 15-minute scan always evaluated the *in-progress* daily bar, so a crossover confirmed at the close could never be acted on.
+2. **One real signal was suppressed by them.** NVDA on 2026-07-08 qualified on completed bars — the live window's inflated EMA_50 rejected it.
+3. **The strategy had no edge regardless.** Permutation test on its trade P&Ls: **p = 0.6144**. Negative CAGR over 8 years. Last place of 9 strategies in *both* train and test halves. Fixing the defects would have produced more trades and larger losses.
+
+A search across ~200 configurations — technical rules, cross-sectional momentum, sector rotation, options on real Alpaca option bars, volatility targeting, LLM signals — found nothing that reliably improved risk-adjusted return once survivorship bias was removed. Exposure management reliably reduced drawdown, so that is what the system now does.
+
+Full evidence, including what *failed* and why: [`docs/strategy_validation.md`](docs/strategy_validation.md).
 
 ---
 
@@ -10,48 +26,61 @@ A personal, automated swing-trading application that executes a disciplined **3-
 
 ### Asset Universe
 
+Eight sleeves, equal weight at 1/8 of equity each.
+
 | Symbol | Type         | Rationale                                          |
 |--------|--------------|-----------------------------------------------------|
-| NVDA   | Single stock | High-volatility, high-liquidity swing candidate    |
+| NVDA   | Single stock | High-volatility, high-liquidity                    |
 | ASML   | Single stock | Semiconductor equipment, lower NVDA correlation    |
-| VOO    | ETF          | S&P 500 tracker, trend-following use case          |
+| VOO    | ETF          | S&P 500 tracker                                    |
 | QQQM   | ETF          | Nasdaq-100, tech-heavy moderate volatility         |
 | MSFT   | Single stock | Large-cap tech, strong trend structure             |
 | AAPL   | Single stock | Highest US market liquidity                        |
-| AMD    | Single stock | High-beta semiconductor, similar profile to NVDA   |
-| TSM    | Single stock | Semiconductor equipment, non-US, lower correlation |
+| AMD    | Single stock | High-beta semiconductor                            |
+| TSM    | Single stock | Semiconductor, non-US, lower correlation           |
 
-### Buy Signal — Three-Condition AND Gate
+> These symbols were chosen partly *because* they had already performed well. The same strategies scored Sharpe 1.19 here and 0.17 on a universe not selected for past performance. Backtest figures on this universe are not forward expectations.
 
-All three conditions must be true simultaneously on the same daily bar:
+### The rule — per sleeve, hysteresis band around SMA-200
 
-1. **Trend Filter** — Close > EMA(50). Asset is in a structural uptrend. Never buy falling knives.
-2. **RSI Pullback** — 40 ≤ RSI(14) < 55. A mild, controlled dip within the uptrend. Below 40 suggests a deeper problem; at or above 55 means no real pullback has occurred.
-3. **MACD Bullish Crossover** — MACD line crossed above signal line on this specific bar (was at or below on the prior bar). Momentum is turning up.
+Evaluated weekly on the most recent **completed** daily bar:
 
-### Risk Management
+| current state | condition                    | new state |
+|---------------|------------------------------|-----------|
+| held          | close < 0.98 × SMA_200       | exit      |
+| flat          | close > 1.02 × SMA_200       | enter     |
+| either        | anything between those lines | unchanged |
 
-- **Stop-loss**: Entry − (1.5 × ATR). Adapts to each asset's actual volatility.
-- **Take-profit**: Entry + (2 × ATR). R:R ≥ 1.33:1, achievable within the 5-day hold window.
-- **Trailing stop**: Ratchets up as price rises, activates after 0.5× ATR move in favor. Locks in profit early.
-- **Force-close**: Day 5 EOD, regardless of P&L. Discipline over hope.
+The band is hysteresis, not a threshold — the same price gives a different answer depending on whether the sleeve is currently held. That is what keeps turnover near 7×/yr instead of ~20×/yr when price oscillates around the average.
 
-### Exit Priority
+A sleeve that is off, or that could not be priced, leaves its capital **in cash**. Weight is never redistributed to the remaining sleeves.
 
-1. Hard stop hit → immediate market sell (no human gate)
-2. Trailing stop hit → immediate market sell (no human gate)
-3. Take-profit hit → limit sell at TP price
-4. Day 5 EOD → market close
+### Risk management
 
-### Backtest Results (2022–2024)
+The regime band *is* the risk control. No ATR stops, no take-profits, no trailing stops, no day-5 force close — those belonged to the retired strategy. The remaining guardrail is `MAX_POSITION_PCT`, which caps any single sleeve.
 
-| Period | Sharpe | Max DD | Trades | Win Rate | Verdict |
-|--------|--------|--------|--------|----------|---------|
-| 2022–2024 (full) | 1.043 | -1.89% | 15 | 73.3% | Phase 2 gate PASS |
-| 2022 only (bear) | 0.228 | -1.48% | 2 | 50.0% | Capital protected |
-| 2023–2024 (bull) | 1.291 | -1.89% | 13 | 76.9% | PASS |
+### Rebalance cadence
 
-The 2022 bear market result is intentional: the EMA_50 trend filter blocked almost all signals, leaving equity nearly flat (+0.55%) while the broader market fell ~20%.
+Weekly, after Friday's close. Orders queue to Monday's open, reproducing the one-bar execution lag the strategy was validated under. Weekly scored Sharpe 1.28 against daily's 1.33 at a third of the turnover — which is why there is no intraday scanner.
+
+---
+
+## Honest performance expectations
+
+Validated 2018-11 → 2026-07 on the eight-symbol universe:
+
+|                | overlay | buy & hold |
+|----------------|---------|------------|
+| CAGR           | 27.9%   | 39.1%      |
+| Sharpe         | 1.24    | 1.15       |
+| Max drawdown   | **−25.6%** | −50.0%  |
+| MAR            | 1.09    | 0.78       |
+
+**What survived validation:** the drawdown reduction. In a block bootstrap the overlay produced the shallower drawdown in 98.7%–100% of resamples across four different universes, and it beat a *matched-exposure static control* in every window tested.
+
+**What did not:** any risk-adjusted return advantage. In the out-of-sample half the overlay scored Sharpe 1.56 against buy-and-hold's 1.57 and a constant-50%-exposure control's 1.62 — a dead heat. It beat buy-and-hold in **2 of 9 calendar years**, both of them down years.
+
+The backtest window contains no 2000- or 2008-style bear market, so treat the absolute figures as optimistic. If the objective were maximum wealth rather than a tolerable drawdown, buy-and-hold with no application at all would be the honest recommendation.
 
 ---
 
@@ -60,33 +89,37 @@ The 2022 bear market result is intentional: the EMA_50 trend filter blocked almo
 ```
 ┌─────────────────────────────────────────────────────┐
 │              Data Ingestion Layer                   │
-│   Alpaca API — historical bars + real-time quotes   │
+│   Alpaca API — completed daily bars only            │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │              Strategy Layer                         │
-│  indicators.py → signals.py → risk.py               │
-│  RSI · EMA · MACD · Vol SMA · ATR                   │
+│  indicators.py → portfolio.py                       │
+│  SMA_200 → regime state → target weights → orders   │
+│  Pure functions; shared by live AND backtest        │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │         Human-in-the-Loop Gate (Telegram)           │
-│  Alert sent → waits for YES/NO reply                │
-│  Stops bypass this gate and execute immediately     │
+│  One weekly plan message → waits for YES/NO         │
+│  INCREASES need YES · REDUCTIONS bypass entirely    │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │              Execution Layer                        │
-│  executor.py — Alpaca order placement               │
-│  Paper env (Phase 1–3) ↔ Live env (Phase 4)         │
+│  executor.py — Alpaca notional market orders        │
+│  Holdings re-derived from Alpaca every run          │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │              State & Scheduler Layer                │
-│  SQLite — positions, trade log                      │
-│  APScheduler — scans every 15 min, 9:45–15:45 EST   │
+│  SQLite — sleeves, rebalance_log, trade_log         │
+│  APScheduler — rebalance Fri 16:15 ET               │
+│              + heartbeat Sat 09:00 ET               │
 └─────────────────────────────────────────────────────┘
 ```
+
+`backtest.py` calls the same `portfolio.py` functions `main.py` calls. The retired strategy failed partly because the live path and the backtest disagreed about which bar to evaluate; sharing the strategy module removes that class of bug.
 
 ### Tech Stack
 
@@ -109,18 +142,19 @@ The 2022 bear market result is intentional: the EMA_50 trend filter blocked almo
 swing-trader/
 ├── src/
 │   ├── config.py       # Loads .env, exposes typed Settings dataclass
-│   ├── data.py         # Alpaca data fetching (historical + latest bar)
-│   ├── indicators.py   # RSI, EMA, MACD, Vol SMA, ATR (pure functions)
-│   ├── signals.py      # Three-condition AND gate evaluation
-│   ├── risk.py         # ATR-based SL/TP, position sizing, trailing stop
-│   ├── database.py     # SQLite state store + weekly summary aggregator
-│   ├── notifier.py     # Telegram alerts, weekly heartbeat, YES/NO reply handler
-│   └── executor.py     # Alpaca order placement (paper + live)
-├── tests/              # 180 unit tests (indicators, signals, risk, database, notifier, executor)
-├── docs/               # Architecture and implementation phase docs
-├── scripts/            # Data validation, DB pull/migrate, notional order smoke-test
-├── main.py             # Entry point — scheduler + orchestration
-├── backtest.py         # Phase 2 standalone backtest runner
+│   ├── data.py         # Alpaca data fetching; drops the forming bar
+│   ├── indicators.py   # SMA_200 + legacy indicator columns
+│   ├── portfolio.py    # THE STRATEGY — regime, weights, order diffing
+│   ├── risk.py         # Legacy position dataclass (retired strategy)
+│   ├── database.py     # SQLite — sleeves, rebalance_log, trade_log
+│   ├── notifier.py     # Telegram plan/result alerts + reply handler
+│   └── executor.py     # Alpaca orders + holdings fetch
+├── tests/              # 211 unit tests
+├── docs/               # Architecture, phases, and strategy validation
+├── scripts/            # Data validation, DB pull/migrate, order smoke-test
+├── main.py             # Entry point — weekly rebalance scheduler
+├── backtest.py         # Regime overlay backtester
+├── validate_oos.py     # Matched-exposure control, train/test, bootstrap
 └── requirements.txt
 ```
 
@@ -152,15 +186,21 @@ ALPACA_PAPER=true
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 
-# Strategy parameters (tune without touching code)
+# Universe
 SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
-RSI_LOWER_BOUND=40
-RSI_UPPER_BOUND=55
-ATR_STOP_MULTIPLIER=1.5
-ATR_TP_MULTIPLIER=2.0
-ATR_TRAILING_ACTIVATION=0.5
-RISK_PER_TRADE_PCT=0.02
-MAX_OPEN_POSITIONS=2
+
+# Strategy
+SMA_BAND=0.02              # exit <0.98×SMA200, enter >1.02×
+BARS_LOOKBACK_DAYS=365     # must comfortably exceed 200 trading days
+
+# Rebalancing
+DRIFT_TOLERANCE=0.001      # skip trades below 0.1% of equity
+MIN_ORDER_NOTIONAL=1.0
+REBALANCE_DAY=fri
+REBALANCE_HOUR=16
+REBALANCE_MINUTE=15
+REPLY_TIMEOUT_SECS=14400   # 4h; orders queue to Monday's open anyway
+MAX_POSITION_PCT=0.25
 ```
 
 Get your Alpaca paper trading keys at [alpaca.markets](https://alpaca.markets). Create a Telegram bot via [@BotFather](https://t.me/BotFather).
@@ -171,61 +211,66 @@ Get your Alpaca paper trading keys at [alpaca.markets](https://alpaca.markets). 
 python scripts/validate_data.py
 ```
 
-All eight symbols should return 1 year of clean OHLCV bars with no nulls.
-
 ### 4. Run the backtester
 
 ```bash
-python backtest.py                                          # 2022–2024 full
-python backtest.py --start 2022-01-01 --end 2022-12-31     # bear market
-python backtest.py --start 2023-01-01 --end 2024-12-31     # bull market
+python backtest.py --benchmark                       # full history vs buy & hold
+python backtest.py --start 2022-01-01 --end 2022-12-31 --benchmark   # bear market
+python backtest.py --band 0.0 --rebalance 1          # daily, no hysteresis
 ```
 
-### 5. Run the live paper trading loop
+### 5. Pressure-test the strategy
+
+```bash
+python validate_oos.py
+```
+
+Runs the matched-exposure control, the train/test split, and the block bootstrap on drawdown — the three tests that decided this strategy and rejected the alternatives.
+
+### 6. Run the live paper trading loop
 
 ```bash
 python main.py
 ```
 
-The scheduler will start scanning every 15 minutes during market hours (9:45–15:45 EST). Trade entry alerts are sent to Telegram for human approval. A weekly summary is also sent every Friday at 16:30 EST — a clean health check (status, equity, open positions, trades closed, signals) confirming the app is running.
+The scheduler rebalances every Friday at 16:15 ET and sends a heartbeat every Saturday at 09:00 ET.
 
 ---
 
 ## Implementation Phases
 
-| Phase | Description                        | Status                        |
-|-------|------------------------------------|-------------------------------|
-| 1     | Environment, data pipeline, config | Complete                      |
-| 2     | Indicators, signals, backtesting   | Complete                      |
-| 3     | Paper trading automation           | In progress (database done)   |
-| 4     | Live capital deployment            | Not started                   |
+| Phase | Description                        | Status                          |
+|-------|------------------------------------|---------------------------------|
+| 1     | Environment, data pipeline, config | Complete                        |
+| 2     | Indicators, signals, backtesting   | Complete (strategy since retired) |
+| 3     | Paper trading automation           | Complete; observation voided    |
+| 3R    | Strategy replacement — regime overlay | Code complete, deploying     |
+| 4     | Live capital deployment            | Not started                     |
 
-**Phase gate before live trading:** ≥ 20 paper trades, Sharpe > 0.8, max drawdown < 15%.
+**Phase gate before live trading:** 26 weekly rebalances, max drawdown < 15%, zero unhandled crashes, live regime transitions matching the backtest on the same bars. Deliberately no Sharpe or win-rate gate — the strategy does not claim an edge, so testing for one would be measuring noise.
 
 ---
 
 ## Risk Guardrails
 
-These are hard constraints that cannot be bypassed:
+Hard constraints that cannot be bypassed:
 
 - Live orders are blocked when `ALPACA_PAPER=true`
-- No order is placed without a stop-loss computed first
-- Stop-loss and trailing stop exits execute immediately without human approval
-- Position size is calculated from live account equity on every trade
-- Maximum 2 open positions at any time
-- Day 5 force-close executes even if Telegram is unreachable
+- No order is placed without validated target weights; a sleeve whose regime is off has a target weight of exactly 0
+- **Exposure reductions execute immediately and unconditionally**, including when Telegram is unreachable. Only increases require the weekly YES
+- Target notionals are derived from equity fetched live on every rebalance
+- One sleeve per symbol, each capped at `MAX_POSITION_PCT`
+- A failed order is logged, alerted, and never assumed to have succeeded — holdings are re-derived from Alpaca on the next run
 
 ---
 
 ## Paper → Live Switch
 
-The only change needed to go from paper to live trading:
-
 1. Set `ALPACA_PAPER=false` in `.env`
 2. Replace API keys with live Alpaca credentials
 3. Restart the service
 
-Zero code changes by design.
+Zero code changes by design. All orders are notional, so fractional shares are automatic — on a $1,000 account each sleeve targets $125, and ASML at ~$1,600/share resolves to ~0.08 shares.
 
 ---
 

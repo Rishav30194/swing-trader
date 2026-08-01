@@ -22,6 +22,7 @@ whether to skip that symbol or abort the run.
 """
 
 import logging
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -49,17 +50,36 @@ _client = StockHistoricalDataClient(
 # Columns we expect in every DataFrame we return. Used for validation.
 _REQUIRED_COLUMNS = {"open", "high", "low", "close", "volume"}
 
+_ET = zoneinfo.ZoneInfo("America/New_York")
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
+def get_historical_bars(
+    symbol: str,
+    days: int = 365,
+    *,
+    completed_only: bool = False,
+) -> pd.DataFrame:
     """
     Fetch daily OHLCV bars for `symbol` going back `days` calendar days.
 
     Returns a DataFrame indexed by date (one row per trading day) with
     columns: open, high, low, close, volume, timestamp.
+
+    Args:
+        symbol: Ticker to fetch.
+        days: Calendar days of history. The strategy needs 200 completed bars
+            for SMA_200, so callers should request ~365 or more — a shorter
+            window leaves slow indicators under-converged rather than absent,
+            which is the silent-failure mode that broke the previous strategy.
+        completed_only: Drop the final bar when it is today's still-forming
+            session. During market hours Alpaca returns a partial bar for the
+            current day; evaluating it means acting on an incomplete close and
+            never seeing that bar in its final form. Set True for anything that
+            makes trading decisions.
 
     Raises:
         ValueError  — if the returned DataFrame is missing required columns
@@ -113,6 +133,9 @@ def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
 
     df = _validate_and_clean(df, symbol)
 
+    if completed_only:
+        df = _drop_forming_bar(df, symbol)
+
     logger.info(
         "Fetched %d bars for %s  (%s → %s)",
         len(df),
@@ -120,6 +143,23 @@ def get_historical_bars(symbol: str, days: int = 365) -> pd.DataFrame:
         df["timestamp"].iloc[0].date(),
         df["timestamp"].iloc[-1].date(),
     )
+    return df
+
+
+def _drop_forming_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """
+    Remove the trailing bar if it carries today's (ET) date.
+
+    Alpaca includes the in-progress session as a bar from the opening bell, so
+    during market hours the last row is a partial day. Acting on it means the
+    decision is made against a close that has not happened yet.
+    """
+    today_et = datetime.now(timezone.utc).astimezone(_ET).date()
+    if df["timestamp"].iloc[-1].date() == today_et:
+        df = df.iloc[:-1].copy()
+        logger.info("%s: dropped today's forming bar (%s)", symbol, today_et)
+        if df.empty:
+            raise ValueError(f"No completed bars for {symbol} after dropping today's.")
     return df
 
 

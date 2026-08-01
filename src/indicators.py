@@ -9,6 +9,7 @@ Column contract added by this module:
   RSI_14         : float  — Relative Strength Index, 14-period
   EMA_21         : float  — Exponential Moving Average, 21-period
   EMA_50         : float  — Exponential Moving Average, 50-period
+  SMA_200        : float  — Simple Moving Average, 200-period (regime filter)
   MACD           : float  — MACD line (12-period EMA − 26-period EMA)
   MACD_signal    : float  — Signal line (9-period EMA of MACD)
   MACD_hist      : float  — Histogram (MACD − signal)
@@ -33,8 +34,14 @@ import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
-# Minimum bars needed for the slowest indicator (EMA_50) to produce a value.
+# Minimum bars for compute_indicators() to run at all. Short frames still
+# produce every column; the slow ones are simply NaN in the warm-up region.
 MIN_BARS = 60
+
+# Bars required before SMA_200 — and therefore the regime filter — is usable.
+# main.py validates against this and refuses to trade a symbol without it,
+# rather than silently treating a NaN regime as "stay flat".
+MIN_BARS_FOR_STRATEGY = 200
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -62,6 +69,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out["EMA_21"] = ta.ema(out["close"], length=21)
     out["EMA_50"] = ta.ema(out["close"], length=50)
+    out["SMA_200"] = ta.sma(out["close"], length=200)
 
     macd_df = ta.macd(out["close"], fast=12, slow=26, signal=9)
     out["MACD"]        = macd_df["MACD_12_26_9"]

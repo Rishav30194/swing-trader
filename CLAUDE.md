@@ -17,6 +17,27 @@ The current phase is tracked in `implementation_phases.md` by checked boxes.
 Before writing any code, locate the current phase and understand what the
 immediate next unchecked task is.
 
+### Current strategy — SMA-200 regime overlay (adopted 2026-08-01)
+
+Equal-weight the symbols in `SYMBOLS`. Each sleeve is either fully on or fully
+off, decided per symbol by a hysteresis band around its own 200-day SMA:
+
+  * held, and close < 0.98 × SMA_200  → exit that sleeve (weight 0)
+  * flat, and close > 1.02 × SMA_200  → enter that sleeve (weight 1/N)
+  * otherwise                          → hold current state
+
+Rebalance **weekly**, on completed daily bars. Cash sits idle when sleeves are off
+(typically ~30% of the time).
+
+**What this strategy is and is not.** It is a drawdown-control device. Validated
+2018-11→2026-07 it cut maximum drawdown from −50.0% to −25.6% while reducing CAGR
+from 41.1% to 28.9%, and beat a constant-exposure control at matched average
+exposure on drawdown and MAR in every window tested. It showed **no** out-of-sample
+Sharpe advantage (test half: 1.56 vs 1.57 buy-and-hold) and it beat buy-and-hold in
+only 2 of 9 calendar years. Do not describe it as an alpha strategy, and do not
+re-tune it toward higher returns — the drawdown reduction is the only effect that
+replicated across four universes. See `docs/strategy_validation.md`.
+
 ---
 
 ## Git Workflow
@@ -92,7 +113,7 @@ Require explicit confirmation before modifying:
   configurable via env vars without touching code.
 
 ### Testing
-- Every function in `indicators.py`, `signals.py`, and `risk.py` must have
+- Every function in `indicators.py`, `portfolio.py`, and `risk.py` must have
   a unit test in `tests/`.
 - Tests must not make real API calls. Mock Alpaca responses.
 - A test that passes with fake data but would fail with real data is worse
@@ -108,28 +129,35 @@ I ask in the moment. If I ask you to bypass one of these, refuse and explain why
 1. **Never place a live order when `ALPACA_PAPER=true`.**
    The executor must check this env var on every order call, not just at startup.
 
-2. **Never place an order without a stop-loss level computed first.**
-   `compute_exit_levels()` must be called and its result validated before
-   `place_buy_order()` is ever invoked.
+2. **Never place an order without validated target weights.**
+   `compute_target_weights()` must be called and its result validated before
+   any order is placed. The SMA-200 regime band *is* the risk control for this
+   strategy — there is no per-trade stop-loss. A sleeve whose regime state is
+   False must have a target weight of exactly 0.
 
-3. **Stop-loss and trailing stop exits must bypass the human gate.**
-   Only entry signals go through Telegram approval. Exits triggered by
-   SL or trailing stop must execute immediately as market orders.
+3. **Exposure reductions execute immediately and unconditionally.**
+   Any order that *reduces* exposure (sell to a lower target weight, or exit a
+   sleeve whose regime turned False) must execute without human approval and
+   without depending on Telegram succeeding. Only orders that *increase*
+   exposure require the weekly YES. If the reply times out, reductions still
+   execute and increases are skipped.
 
 4. **Position size must be computed from account equity, not hardcoded.**
-   `compute_position_size()` must fetch current equity from Alpaca on
-   every call. Never use a cached or hardcoded equity value for sizing.
+   Target notionals must be derived from equity fetched from Alpaca on every
+   rebalance. Never use a cached or hardcoded equity value for sizing.
 
-5. **Maximum 2 open positions simultaneously.**
-   The scan loop must check `get_open_positions()` and skip signal
-   evaluation entirely if 2 positions are already open.
+5. **One sleeve per symbol; each capped at `MAX_POSITION_PCT` of equity.**
+   The rebalancer must never hold a symbol not in `SYMBOLS`, never open a
+   second sleeve in the same symbol, and never let a computed target notional
+   exceed `MAX_POSITION_PCT × equity`.
 
 6. **Never modify `ALPACA_PAPER` or API credentials programmatically.**
    These must only be changed manually in the `.env` file by the user.
 
-7. **Day 5 force-close must execute even if Telegram is unreachable.**
-   The exit logic must not depend on notification success. Log the failure,
-   execute the order anyway.
+7. **A rebalance must never leave the portfolio in a partially-applied state
+   silently.** If any order in a rebalance fails, log it, alert via Telegram,
+   and persist which orders succeeded. Never assume the target state was
+   reached — always re-derive current holdings from Alpaca on the next run.
 
 ---
 
@@ -140,7 +168,8 @@ I ask in the moment. If I ask you to bypass one of these, refuse and explain why
 - Live base URL: `https://api.alpaca.markets`
 - Data API base URL: `https://data.alpaca.markets`
 - Bar timeframe for strategy: `TimeFrame.Day`
-- Market orders only for stops and force-closes. Limit orders only for TP.
+- Market orders only. The weekly rebalance places notional (dollar-amount)
+  market orders; fractional quantities are expected and `shares` is a float.
 - Always check order status after placement — Alpaca paper fills are fast
   but not instant.
 - Rate limits: 200 requests/min on free tier. Our 8-symbol scan is well within this.
@@ -167,7 +196,8 @@ Do not add any of the following unless I explicitly ask in a later phase:
 - Options, futures, or leveraged instruments
 - Intraday bars or real-time tick processing
 - ML/AI-based signal generation
-- Auto-execute on timeout (no human gate bypass)
+- Auto-execute of exposure *increases* on timeout (see hard rule 3 — reductions
+  are always automatic, increases always need the weekly YES)
 - Automatic parameter optimization or walk-forward testing
 
 ---
