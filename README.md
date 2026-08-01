@@ -149,7 +149,7 @@ swing-trader/
 │   ├── database.py     # SQLite — sleeves, rebalance_log, trade_log
 │   ├── notifier.py     # Telegram plan/result alerts + reply handler
 │   └── executor.py     # Alpaca orders + holdings fetch
-├── tests/              # 211 unit tests
+├── tests/              # 285 unit tests
 ├── docs/               # Architecture, phases, and strategy validation
 ├── scripts/            # Data validation, DB pull/migrate, order smoke-test
 ├── main.py             # Entry point — weekly rebalance scheduler

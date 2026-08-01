@@ -297,7 +297,7 @@ same bars.
       cannot diverge
 - [x] `validate_oos.py` — matched-exposure control, train/test, block bootstrap
 - [x] Delete `signals.py` and its tests
-- [x] 211 unit tests passing
+- [x] 285 unit tests passing (`main.py` and `data.py` previously had none)
 - [x] Backtest reproduces the validated figures (maxDD −25.56% exact match)
 
   > **Bug caught by that integration check:** `compute_target_weights` divided by
