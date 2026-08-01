@@ -109,23 +109,30 @@ def _fmt_rebalance_result(results: list[dict]) -> str:
         return "✅ <b>Rebalance complete</b>\n\nNo orders were required."
 
     filled = [r for r in results if r["status"] == "filled"]
+    partial = [r for r in results if r["status"] == "partial"]
     failed = [r for r in results if r["status"] == "failed"]
     skipped = [r for r in results if r["status"] == "skipped"]
 
     lines = []
     for r in results:
-        icon = {"filled": "✓", "failed": "✗", "skipped": "–"}.get(r["status"], "?")
+        icon = {"filled": "✓", "partial": "◐",
+                "failed": "✗", "skipped": "–"}.get(r["status"], "?")
         lines.append(f"{icon} {r['side'].upper():<4} {r['symbol']:<6} ${r['notional']:>9,.2f}")
 
-    icon = "🚨" if failed else "✅"
-    header = f"{icon} <b>Rebalance complete</b>"
-    tail = f"\n\n{len(failed)} order(s) FAILED — check the logs." if failed else ""
+    counts = f"filled {len(filled)}  failed {len(failed)}  skipped {len(skipped)}"
+    if partial:
+        counts += f"  partial {len(partial)}"
+
+    problems = len(failed) + len(partial)
+    icon = "🚨" if problems else "✅"
+    tail = (f"\n\n{problems} order(s) did not fill cleanly — portfolio is NOT at "
+            f"target. Check the logs.") if problems else ""
 
     return (
-        f"{header}\n\n"
+        f"{icon} <b>Rebalance complete</b>\n\n"
         f"<pre>"
         f"{chr(10).join(lines)}\n\n"
-        f"filled {len(filled)}  failed {len(failed)}  skipped {len(skipped)}"
+        f"{counts}"
         f"</pre>{tail}"
     )
 

@@ -338,3 +338,19 @@ fractional shares are automatic. With 8 equal sleeves on a $1,000 account each
 target is $125 — ASML at ~$1,600/share resolves to ~0.08 shares, which is fine.
 The earlier plan to drop ASML for Phase 4 is no longer needed: it was a
 consequence of whole-share sizing under the retired strategy.
+
+**Note on cash vs margin accounts.** When every sleeve is on, the plan deploys
+100% of equity, and a rebalance that sells one sleeve to fund another does both
+in the same run. On a **margin** account (including Alpaca paper, which carries a
+4× multiplier) proceeds are available immediately and this is fine. On a **cash**
+account, sale proceeds settle T+1, so a same-run buy funded by that morning's
+sale can be rejected for unsettled funds. The failure is safe — the order is
+logged, alerted, and the next weekly run re-derives holdings from Alpaca and
+retries — but expect it if you go live on a cash account.
+
+**Account dedication is assumed.** Sleeve targets are sized off *total* account
+equity. Any position held outside `SYMBOLS` inflates every target. The
+rebalancer never sells what it does not manage, and warns on each run if it
+finds such a position, but the account should hold only the configured symbols.
+Short positions in managed symbols abort the run outright — the strategy is
+long-only and a negative holding would invert the order arithmetic.

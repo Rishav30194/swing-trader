@@ -24,6 +24,7 @@ Hard rules enforced here (from CLAUDE.md):
 import logging
 import logging.handlers
 import sqlite3
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -104,18 +105,25 @@ def _evaluate_regimes(conn: sqlite3.Connection) -> dict[str, RegimeState]:
             )
             continue
 
-        df = compute_indicators(df)
-        state = compute_regime_state(
-            df,
-            band=settings.sma_band,
-            currently_held=previous.get(symbol, False),
-        )
+        try:
+            df = compute_indicators(df)
+            state = compute_regime_state(
+                df,
+                band=settings.sma_band,
+                currently_held=previous.get(symbol, False),
+            )
+            set_regime_state(
+                conn, symbol, state.on,
+                last_close=state.context.get("close"),
+                last_sma_200=state.context.get("sma_200"),
+            )
+        except Exception:
+            # Omit rather than default: an un-evaluable sleeve keeps whatever
+            # position it has and receives no target weight.
+            logger.exception("%s: regime evaluation failed — sleeve left untouched", symbol)
+            continue
+
         states[symbol] = state
-        set_regime_state(
-            conn, symbol, state.on,
-            last_close=state.context.get("close"),
-            last_sma_200=state.context.get("sma_200"),
-        )
 
     return states
 
@@ -124,24 +132,44 @@ def _evaluate_regimes(conn: sqlite3.Connection) -> dict[str, RegimeState]:
 # Order execution
 # ---------------------------------------------------------------------------
 
+def _classify_fill(response: dict) -> str:
+    """
+    Map an Alpaca order status onto what actually happened to our money.
+
+    A submission that raises no exception has NOT necessarily filled: the order
+    can sit in "new"/"accepted", or come back "rejected" or "canceled", and
+    _wait_for_fill returns the last known state once it times out. Recording
+    those as filled would put a trade in the database that never happened.
+    """
+    status = str(response.get("status") or "").lower()
+    if status == "filled":
+        return "filled"
+    if status == "partially_filled":
+        return "partial"
+    return "failed"
+
+
+def _actual_notional(response: dict, requested: float) -> float:
+    """Dollar value actually transacted, falling back to the requested amount."""
+    qty = float(response.get("filled_qty") or 0.0)
+    price = float(response.get("filled_avg_price") or 0.0)
+    filled = qty * price
+    return filled if filled > 0 else requested
+
+
 def _execute_order(
     conn: sqlite3.Connection,
     order: RebalanceOrder,
     holdings: dict[str, dict],
 ) -> dict:
     """
-    Place one rebalance order and record the outcome.
+    Place one rebalance order and record what actually happened.
 
     A full sleeve exit sells the exact share count so no fractional dust is
     left behind; a partial trim sells a dollar amount. Never raises — the
     result dict carries the status so one bad symbol cannot abort the rest
     of the rebalance (hard rule 7).
     """
-    result = {
-        "symbol": order.symbol, "side": order.side,
-        "notional": order.notional, "status": "failed",
-    }
-
     try:
         if order.side == "buy":
             resp = place_buy_order(order.symbol, order.notional)
@@ -156,14 +184,24 @@ def _execute_order(
             conn, order.symbol, order.side, order.notional, order.reason,
             "failed", detail={"error": str(exc)},
         )
-        return result
+        return {"symbol": order.symbol, "side": order.side,
+                "notional": order.notional, "status": "failed"}
 
-    result["status"] = "filled"
+    status = _classify_fill(resp)
+    notional = _actual_notional(resp, order.notional)
+
+    if status != "filled":
+        logger.error(
+            "%s: %s order did not fill cleanly — Alpaca status=%s filled_qty=%s",
+            order.symbol, order.side, resp.get("status"), resp.get("filled_qty"),
+        )
+
     log_rebalance_order(
-        conn, order.symbol, order.side, order.notional, order.reason,
-        "filled", order_id=resp.get("id"), detail=resp,
+        conn, order.symbol, order.side, notional, order.reason,
+        status, order_id=resp.get("id"), detail=resp,
     )
-    return result
+    return {"symbol": order.symbol, "side": order.side,
+            "notional": notional, "status": status}
 
 
 def _execute_plan(
@@ -202,6 +240,32 @@ def _execute_plan(
 # Weekly rebalance
 # ---------------------------------------------------------------------------
 
+def _warn_on_unmanaged_holdings(holdings: dict[str, dict]) -> None:
+    """
+    Flag positions in the account that this strategy does not manage.
+
+    Sizing uses total account equity, so anything held outside SYMBOLS inflates
+    every sleeve's target. The rebalancer will never sell such a position — it
+    only ever acts on symbols in the configured universe — but the user needs to
+    know the account is not dedicated, because the sizing assumption is wrong.
+    """
+    foreign = sorted(set(holdings) - set(settings.symbols))
+    if not foreign:
+        return
+
+    value = sum(holdings[s]["notional"] for s in foreign)
+    logger.warning(
+        "Account holds %d unmanaged position(s) worth $%.2f: %s — sleeve targets "
+        "are sized off total equity and will be too large",
+        len(foreign), value, ", ".join(foreign),
+    )
+    send_error_alert(
+        f"Unmanaged positions detected ({', '.join(foreign)}, ${value:,.2f}). "
+        "Sleeve targets are sized off total equity, so they are inflated. "
+        "This account should hold only the configured symbols."
+    )
+
+
 def _run_rebalance(conn: sqlite3.Connection) -> None:
     """One weekly cycle: evaluate regimes, plan, approve, execute, report."""
     logger.info("=== Rebalance start ===")
@@ -214,28 +278,54 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
         send_error_alert("Rebalance aborted: could not fetch equity or holdings")
         return
 
+    shorts = sorted(
+        s for s in settings.symbols
+        if holdings.get(s, {}).get("shares", 0.0) < 0
+    )
+    if shorts:
+        # This strategy is long-only. A negative position would make
+        # current_notional negative and inflate the resulting buy, so refuse to
+        # act rather than compute an order against an impossible state.
+        logger.error("Short position(s) detected in managed symbols: %s", shorts)
+        send_error_alert(
+            f"Rebalance aborted: short position(s) in {', '.join(shorts)}. "
+            "This strategy is long-only — close them manually first."
+        )
+        return
+
+    _warn_on_unmanaged_holdings(holdings)
+
     states = _evaluate_regimes(conn)
     if not states:
         logger.error("No symbols could be evaluated — aborting rebalance")
         send_error_alert("Rebalance aborted: no symbols could be evaluated")
         return
 
-    # universe_size is the configured symbol count, not len(states) — a symbol
-    # that failed to evaluate must leave its weight in cash, not hand it to the
-    # sleeves that did evaluate.
-    weights = compute_target_weights(
-        states,
-        universe_size=len(settings.symbols),
-        max_position_pct=settings.max_position_pct,
-    )
-    validate_target_weights(weights, states, max_position_pct=settings.max_position_pct)
+    # A raise anywhere in here means a hard-rule violation or a sizing bug.
+    # Without the guard it would escape into APScheduler, which logs it and
+    # carries on — the rebalance would fail silently every week with nobody told.
+    try:
+        # universe_size is the configured symbol count, not len(states): a symbol
+        # that failed to evaluate must leave its weight in cash rather than hand
+        # it to the sleeves that did evaluate.
+        weights = compute_target_weights(
+            states,
+            universe_size=len(settings.symbols),
+            max_position_pct=settings.max_position_pct,
+        )
+        validate_target_weights(
+            weights, states, max_position_pct=settings.max_position_pct)
 
-    current_notional = {s: v["notional"] for s, v in holdings.items()}
-    orders = diff_to_orders(
-        current_notional, weights, equity,
-        min_order_notional=settings.min_order_notional,
-        drift_tolerance=settings.drift_tolerance,
-    )
+        current_notional = {s: v["notional"] for s, v in holdings.items()}
+        orders = diff_to_orders(
+            current_notional, weights, equity,
+            min_order_notional=settings.min_order_notional,
+            drift_tolerance=settings.drift_tolerance,
+        )
+    except Exception as exc:
+        logger.exception("Target weight computation failed — no orders placed")
+        send_error_alert(f"Rebalance aborted: {exc}")
+        return
 
     log_event(conn, "PORTFOLIO", "plan", {
         "equity": equity,
@@ -253,8 +343,14 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
     approved = _await_approval(orders)
     results = _execute_plan(conn, orders, holdings, approved)
 
-    if any(r["status"] == "failed" for r in results):
-        send_error_alert("One or more rebalance orders FAILED — see logs")
+    # A partial fill also needs attention: money moved but the portfolio is not
+    # at target, so it must not pass silently.
+    problems = [r for r in results if r["status"] in ("failed", "partial")]
+    if problems:
+        send_error_alert(
+            "Rebalance did not complete cleanly: "
+            + ", ".join(f"{r['symbol']} {r['side']} {r['status']}" for r in problems)
+        )
 
     send_rebalance_result(results)
     logger.info("=== Rebalance end ===")
@@ -306,6 +402,28 @@ def _send_weekly_heartbeat(conn: sqlite3.Connection) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _guarded(job: Callable[[], None], label: str) -> Callable[[], None]:
+    """
+    Wrap a scheduled job so nothing can fail silently.
+
+    APScheduler catches job exceptions and writes them to its own logger, then
+    carries on. For a system that moves money that is the worst outcome: the
+    rebalance stops happening and nobody is told. This turns any unhandled
+    exception into a Telegram alert.
+    """
+    def run() -> None:
+        try:
+            job()
+        except Exception as exc:
+            logger.exception("%s crashed", label)
+            try:
+                send_error_alert(f"{label} crashed: {exc}")
+            except Exception:
+                # Last line of defence: nothing here may reach the scheduler.
+                logger.exception("%s: crash alert also failed", label)
+    return run
+
+
 def _configure_logging() -> None:
     """Configure console and rotating file logging."""
     Path("logs").mkdir(exist_ok=True)
@@ -335,7 +453,7 @@ def main() -> None:
     scheduler = BlockingScheduler(timezone="America/New_York")
 
     scheduler.add_job(
-        lambda: _run_rebalance(conn),
+        _guarded(lambda: _run_rebalance(conn), "Weekly rebalance"),
         trigger=CronTrigger(
             day_of_week=settings.rebalance_day,
             hour=settings.rebalance_hour,
@@ -346,7 +464,7 @@ def main() -> None:
         misfire_grace_time=3600,
     )
     scheduler.add_job(
-        lambda: _send_weekly_heartbeat(conn),
+        _guarded(lambda: _send_weekly_heartbeat(conn), "Weekly heartbeat"),
         trigger=CronTrigger(
             day_of_week=_HEARTBEAT_DAY,
             hour=_HEARTBEAT_HOUR,

@@ -23,7 +23,7 @@ whether to skip that symbol or abort the run.
 
 import logging
 import zoneinfo
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 
 import pandas as pd
 from alpaca.data import StockHistoricalDataClient
@@ -51,6 +51,10 @@ _client = StockHistoricalDataClient(
 _REQUIRED_COLUMNS = {"open", "high", "low", "close", "volume"}
 
 _ET = zoneinfo.ZoneInfo("America/New_York")
+
+# Regular-session close. A bar dated today is still forming before this time and
+# complete after it. See _drop_forming_bar.
+_SESSION_CLOSE = dtime(16, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -148,18 +152,32 @@ def get_historical_bars(
 
 def _drop_forming_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """
-    Remove the trailing bar if it carries today's (ET) date.
+    Remove the trailing bar only while today's session is still in progress.
 
-    Alpaca includes the in-progress session as a bar from the opening bell, so
-    during market hours the last row is a partial day. Acting on it means the
-    decision is made against a close that has not happened yet.
+    Alpaca includes the current session as a bar from the opening bell, so during
+    market hours the last row is a partial day and acting on it means deciding
+    against a close that has not happened yet.
+
+    After the close that same bar is complete and must be KEPT. Dropping it would
+    make the weekly rebalance decide on the previous day's close, giving live a
+    two-bar execution lag where the backtest has one — the live/backtest
+    divergence that hid the previous strategy's defect.
+
+    The 16:00 ET cutoff is deliberately not holiday- or early-close-aware: on an
+    early-close day the bar is complete sooner, so keeping it after 16:00 is
+    still correct, just later than strictly necessary.
     """
-    today_et = datetime.now(timezone.utc).astimezone(_ET).date()
-    if df["timestamp"].iloc[-1].date() == today_et:
-        df = df.iloc[:-1].copy()
-        logger.info("%s: dropped today's forming bar (%s)", symbol, today_et)
-        if df.empty:
-            raise ValueError(f"No completed bars for {symbol} after dropping today's.")
+    now_et = datetime.now(timezone.utc).astimezone(_ET)
+    last_bar_date = df["timestamp"].iloc[-1].date()
+
+    if last_bar_date != now_et.date() or now_et.time() >= _SESSION_CLOSE:
+        return df
+
+    df = df.iloc[:-1].copy()
+    logger.info("%s: dropped today's forming bar (%s, session still open)",
+                symbol, last_bar_date)
+    if df.empty:
+        raise ValueError(f"No completed bars for {symbol} after dropping today's.")
     return df
 
 

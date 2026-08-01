@@ -365,7 +365,8 @@ def get_weekly_summary(conn: sqlite3.Connection, since: date) -> WeeklySummary:
         (since_iso,),
     ).fetchall()
 
-    filled = [r for r in rows if r["status"] == "filled"]
+    # A partial fill moved real money, so it counts toward the traded notional.
+    filled = [r for r in rows if r["status"] in ("filled", "partial")]
     return WeeklySummary(
         period_start=since,
         period_end=date.today(),

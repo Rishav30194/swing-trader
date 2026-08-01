@@ -152,7 +152,20 @@ class TestFmtRebalanceResult:
         assert "🚨" in _fmt_rebalance_result([self._result("failed")])
 
     def test_failure_is_called_out(self):
-        assert "FAILED" in _fmt_rebalance_result([self._result("failed")])
+        text = _fmt_rebalance_result([self._result("failed")])
+        assert "did not fill cleanly" in text
+        assert "NOT at target" in text
+
+    def test_partial_fill_is_flagged_as_a_problem(self):
+        """A partial fill moved money but left the portfolio off target."""
+        text = _fmt_rebalance_result([self._result("partial")])
+        assert "🚨" in text
+        assert "partial 1" in text
+        assert "did not fill cleanly" in text
+
+    def test_clean_run_has_no_warning(self):
+        text = _fmt_rebalance_result([self._result("filled")])
+        assert "did not fill cleanly" not in text
 
     def test_counts_each_status(self):
         text = _fmt_rebalance_result([
