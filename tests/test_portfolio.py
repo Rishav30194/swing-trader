@@ -296,3 +296,41 @@ class TestDiffToOrders:
         orders = diff_to_orders({"A": 500.0}, {"A": 0.25}, 1000.0)
         assert orders[0].notional > 0
         assert orders[0].side == "sell"
+
+
+# ---------------------------------------------------------------------------
+# drift_tolerance must gate ONLY drift — regime decisions always execute
+# ---------------------------------------------------------------------------
+
+class TestDriftToleranceScope:
+    def test_regime_entry_fires_despite_a_huge_drift_tolerance(self):
+        """
+        Gating regime transitions on drift_tolerance silently stopped all
+        trading once the tolerance exceeded 1/N.
+        """
+        orders = diff_to_orders({}, {"A": 0.125}, 100_000.0, drift_tolerance=0.25)
+        assert len(orders) == 1
+        assert orders[0].reason == "regime_entry"
+
+    def test_regime_exit_fires_despite_a_huge_drift_tolerance(self):
+        orders = diff_to_orders({"A": 12_500.0}, {"A": 0.0}, 100_000.0,
+                                drift_tolerance=0.25)
+        assert len(orders) == 1
+        assert orders[0].reason == "regime_exit"
+
+    def test_drift_is_suppressed_by_the_tolerance(self):
+        orders = diff_to_orders({"A": 10_000.0}, {"A": 0.125}, 100_000.0,
+                                drift_tolerance=0.25)
+        assert orders == []
+
+    def test_drift_fires_when_below_the_tolerance(self):
+        orders = diff_to_orders({"A": 10_000.0}, {"A": 0.125}, 100_000.0,
+                                drift_tolerance=0.001)
+        assert len(orders) == 1
+        assert orders[0].reason == "drift"
+
+    def test_regime_transitions_still_respect_the_broker_minimum(self):
+        """A sub-$1 exit costs more in fees than it recovers."""
+        orders = diff_to_orders({"A": 0.50}, {"A": 0.0}, 1_000.0,
+                                min_order_notional=1.0, drift_tolerance=0.0)
+        assert orders == []

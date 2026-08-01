@@ -68,6 +68,7 @@ def _fmt_rebalance_plan(
     orders: list[RebalanceOrder],
     states: dict[str, RegimeState],
     equity: float,
+    account_equity: float | None = None,
 ) -> str:
     increases = [o for o in orders if o.increases_exposure]
     reductions = [o for o in orders if not o.increases_exposure]
@@ -93,10 +94,17 @@ def _fmt_rebalance_plan(
         if reductions else ""
     )
 
+    # Show both figures whenever they differ: the strategy trades its own
+    # allocation, not the account balance, and that distinction must be obvious
+    # before approving anything.
+    capital = f"Capital : ${equity:,.2f}"
+    if account_equity is not None and abs(account_equity - equity) > 0.01:
+        capital += f"   (account ${account_equity:,.2f})"
+
     return (
         f"🔄 <b>Weekly Rebalance</b>\n\n"
         f"<pre>"
-        f"Equity : ${equity:,.2f}\n\n"
+        f"{capital}\n\n"
         f"Sleeves\n{sleeves}\n\n"
         f"Plan\n{plan_lines}"
         f"</pre>"
@@ -238,6 +246,7 @@ def send_rebalance_plan(
     orders: list[RebalanceOrder],
     states: dict[str, RegimeState],
     equity: float,
+    account_equity: float | None = None,
 ) -> bool:
     """
     Send the weekly rebalance plan: every sleeve's regime state and the orders
@@ -250,7 +259,7 @@ def send_rebalance_plan(
     must not stop reductions from executing (hard rule 3).
     """
     try:
-        asyncio.run(_send(_fmt_rebalance_plan(orders, states, equity)))
+        asyncio.run(_send(_fmt_rebalance_plan(orders, states, equity, account_equity)))
         logger.info("Rebalance plan sent (%d orders)", len(orders))
         return True
     except Exception:

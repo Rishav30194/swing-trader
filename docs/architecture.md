@@ -8,7 +8,7 @@
 | Broker / Data    | Alpaca Markets API  | Free paper trading, same SDK for live          |
 | SDK              | `alpaca-py`         | Official Alpaca Python SDK                     |
 | Data wrangling   | `pandas`            | OHLCV frame manipulation                       |
-| Indicators       | `pandas-ta`         | SMA, RSI, EMA, MACD, ATR — no C compilation    |
+| Indicators       | `pandas-ta`         | SMA_200 only — no C compilation needed         |
 | Scheduler        | `APScheduler`       | In-process cron, weekly triggers               |
 | Notifications    | `python-telegram-bot` | Push alerts + reply handling                 |
 | State store      | `SQLite` (stdlib)   | Regime state, rebalance log, event log         |
@@ -49,7 +49,7 @@
                      │
 ┌────────────────────▼────────────────────────────────┐
 │              State & Scheduler Layer                │
-│  SQLite — sleeves (regime), rebalance_log, trade_log│
+│  SQLite — sleeves, strategy_state, rebalance_log     │
 │  APScheduler — rebalance Fri 16:15 ET               │
 │              + heartbeat Sat 09:00 ET               │
 └─────────────────────────────────────────────────────┘
@@ -76,17 +76,17 @@ swing-trader/
 │   ├── __init__.py
 │   ├── config.py           # Loads .env, exposes typed settings
 │   ├── data.py             # Alpaca data fetching; drops the forming bar
-│   ├── indicators.py       # SMA_200 + legacy indicator columns
+│   ├── indicators.py       # SMA_200 (the only column any code reads)
 │   ├── portfolio.py        # THE STRATEGY — regime, weights, orders
-│   ├── risk.py             # Legacy position dataclass (retired strategy)
-│   ├── database.py         # SQLite — sleeves, rebalance_log, trade_log
+│   ├── database.py         # SQLite — sleeves, strategy_state, rebalance_log
 │   ├── notifier.py         # Telegram plan/result alerts + reply handler
 │   └── executor.py         # Alpaca order placement + holdings fetch
 │
 ├── tests/
 │   ├── test_indicators.py  # Indicator math
 │   ├── test_portfolio.py   # Strategy: regime band, weights, order diffing
-│   ├── test_risk.py        # Legacy risk helpers
+│   ├── test_main.py        # Rebalance orchestration and failure modes
+│   ├── test_data.py        # Bar selection and the forming-bar boundary
 │   ├── test_database.py    # SQLite state store (in-memory)
 │   ├── test_notifier.py    # Telegram formatting + send/listen (mocked)
 │   └── test_executor.py    # Alpaca order placement (mocked TradingClient)
@@ -126,9 +126,10 @@ swing-trader/
 - Callers request ≥365 calendar days so SMA_200 is converged, not merely present
 
 ### `indicators.py`
-- Pure functions: DataFrame in, same DataFrame with indicator columns appended
-- `SMA_200` drives the strategy; the remaining columns (RSI, EMA, MACD, ATR,
-  ADX, Stochastic, OBV) are computed but unused by the current strategy
+- Pure functions: DataFrame in, same DataFrame with `SMA_200` appended
+- `SMA_200` is the only column any code reads. The retired strategy's RSI, EMA,
+  MACD, ATR, ADX, Stochastic and OBV columns were removed rather than
+  recalculated weekly for every symbol; git history has them
 - `MIN_BARS_FOR_STRATEGY = 200` — `main.py` refuses to trade a symbol with less,
   rather than silently treating a NaN regime as "stay flat"
 
@@ -153,7 +154,8 @@ same code runs in the backtest and in production.
 - `log_rebalance_order` — audit row per order (planned/filled/failed/skipped)
 - `log_event` — structured events for audit
 - `get_weekly_summary(conn, since)` — read-only aggregator for the heartbeat
-- Legacy `positions` helpers remain for the retired strategy's historical rows
+- `get_strategy_cash` / `set_strategy_cash` — the strategy's own cash ledger,
+  so a $100k account can trade the $1k allocated to it
 
 ### `notifier.py`
 - `send_rebalance_plan` — the weekly message: every sleeve's close, SMA_200 and
@@ -230,8 +232,8 @@ CREATE TABLE trade_log (
 ```
 
 ### `positions` table (legacy)
-Retained so the retired strategy's historical rows survive. Not written by the
-current code. Not dropped by any migration.
+No longer created. Databases that already have one keep it untouched — nothing
+drops it — but the current code neither reads nor writes it.
 
 ---
 
@@ -250,12 +252,15 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 # Universe
 SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
 
+# Capital — REQUIRED. Sizing uses THIS, not the account balance.
+TRADING_CAPITAL=1000       # a $100k paper account still trades $1k
+
 # Strategy
 SMA_BAND=0.02              # hysteresis: exit <0.98×SMA200, enter >1.02×
 BARS_LOOKBACK_DAYS=365     # must comfortably exceed 200 trading days
 
 # Rebalancing
-DRIFT_TOLERANCE=0.001      # skip trades below 0.1% of equity (dust)
+DRIFT_TOLERANCE=0.05       # skip drift trades below 5% of capital; a TAX dial
 MIN_ORDER_NOTIONAL=1.0     # Alpaca rejects notional orders below $1
 REBALANCE_DAY=fri
 REBALANCE_HOUR=16

@@ -213,9 +213,13 @@ def diff_to_orders(
         target_weights: Output of compute_target_weights().
         equity: Live account equity, fetched fresh (hard rule 4).
         min_order_notional: Alpaca rejects notional orders below $1.
-        drift_tolerance: Skip rebalancing trades smaller than this fraction of
-            equity. Suppresses dust churn without affecting regime transitions,
-            which are always a full sleeve and far above the threshold.
+        drift_tolerance: Skip *drift* trades smaller than this fraction of
+            equity. Applies ONLY to drift — entering or exiting a sleeve is a
+            regime decision and must never be suppressed by a sizing threshold.
+            (Gating regime transitions on it silently stopped all trading once
+            the tolerance exceeded 1/N.) Raising this cuts the number of taxable
+            events sharply, which matters far more than the drift it leaves
+            uncorrected: see docs/strategy_validation.md.
 
     Returns:
         Orders sorted sells-first so proceeds are available before buys run.
@@ -226,18 +230,18 @@ def diff_to_orders(
     if equity <= 0:
         raise ValueError(f"equity must be positive, got {equity}")
 
-    threshold = max(min_order_notional, drift_tolerance * equity)
+    drift_threshold = max(min_order_notional, drift_tolerance * equity)
     orders: list[RebalanceOrder] = []
 
     for symbol, weight in target_weights.items():
         held = current_notional.get(symbol, 0.0)
         target = weight * equity
         delta = target - held
+        reason = _classify(held, target)
 
+        threshold = drift_threshold if reason == "drift" else min_order_notional
         if abs(delta) < threshold:
             continue
-
-        reason = _classify(held, target)
         orders.append(RebalanceOrder(
             symbol=symbol,
             side="buy" if delta > 0 else "sell",

@@ -146,6 +146,24 @@ def get_account_equity() -> float:
         raise
 
 
+def get_account_cash() -> float:
+    """
+    Fetch settled cash from Alpaca.
+
+    Used as a ceiling on the strategy's own cash ledger: if the ledger ever
+    claims more cash than the account actually holds, the account wins.
+
+    Raises on API failure — caller is responsible for aborting.
+    """
+    try:
+        cash = float(_client.get_account().cash)
+        logger.info("Account cash: $%.2f", cash)
+        return cash
+    except Exception:
+        logger.exception("Failed to fetch account cash")
+        raise
+
+
 def get_current_holdings() -> dict[str, dict]:
     """
     Fetch every open position from Alpaca as {symbol: {shares, notional}}.

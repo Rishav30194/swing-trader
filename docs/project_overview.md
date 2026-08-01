@@ -48,7 +48,7 @@ not carry over.
 | AMD    | Single stock  | High-beta semiconductor, similar profile to NVDA.           |
 | TSM    | Single stock  | Semiconductor, non-US, lower NVDA correlation.              |
 
-Eight sleeves, equal weight at 1/8 of equity each.
+Eight sleeves, equal weight at 1/8 of allocated capital each.
 
 > **Known bias:** these symbols were chosen partly because they had already
 > performed well. Testing showed the same strategies scoring Sharpe 1.19 here and
@@ -76,11 +76,18 @@ Evaluated weekly on the most recent **completed** daily bar:
 
 The band is hysteresis, not a threshold. The same price produces a different
 decision depending on whether the sleeve is currently held, which is what keeps
-turnover near 7×/yr instead of ~20×/yr when price oscillates around the average.
+turnover near 5×/yr instead of ~20×/yr when price oscillates around the average.
+
+### Capital
+
+Sizing uses `TRADING_CAPITAL` — the amount allocated to this strategy — plus
+whatever the sleeves have grown to. **Not** the account balance: the paper
+account holds $100,000 and must still trade the $1,000 intended. Profits
+compound into deployable capital; unallocated money is invisible.
 
 ### Weighting
 
-Equal weight across the full configured universe — 1/8 each. A sleeve that is
+Equal weight across the full configured universe — 1/8 of allocated capital each. A sleeve that is
 off, or that could not be evaluated, leaves its capital **in cash**. Weight is
 never redistributed to the remaining sleeves: this strategy reduces risk by
 holding less, never by holding fewer things more heavily.
@@ -90,6 +97,13 @@ holding less, never by holding fewer things more heavily.
 The regime band *is* the risk control. There are no ATR stops, no take-profit
 levels, and no trailing stops — those belonged to the retired strategy. The
 remaining guardrail is `MAX_POSITION_PCT`, which caps any single sleeve.
+
+### Taxes
+
+Every rebalance sell realises a capital gain in a taxable account; buy-and-hold
+defers indefinitely. `DRIFT_TOLERANCE` (default 5%) is the dial that controls
+this — it cut orders from 1,727 to 124 across the backtest while *improving*
+CAGR and Sharpe. In a tax-advantaged account the issue disappears entirely.
 
 ### Rebalance cadence
 
@@ -120,10 +134,10 @@ Validated over 2018-11 → 2026-07 on the eight-symbol universe:
 
 |                | overlay | buy & hold |
 |----------------|---------|------------|
-| CAGR           | 27.9%   | 39.1%      |
-| Sharpe         | 1.24    | 1.15       |
-| Max drawdown   | −25.6%  | −50.0%     |
-| MAR            | 1.09    | 0.78       |
+| CAGR           | 30.0%   | 39.1%      |
+| Sharpe         | 1.26    | 1.15       |
+| Max drawdown   | −27.7%  | −50.0%     |
+| MAR            | 1.08    | 0.78       |
 
 **Read this as: roughly two-thirds of the return for half the drawdown.** The
 overlay showed *no* out-of-sample Sharpe advantage (test half 1.56 vs 1.57) and

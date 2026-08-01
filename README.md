@@ -26,7 +26,7 @@ Full evidence, including what *failed* and why: [`docs/strategy_validation.md`](
 
 ### Asset Universe
 
-Eight sleeves, equal weight at 1/8 of equity each.
+Eight sleeves, equal weight at 1/8 of **allocated capital** each — see [Capital allocation](#capital-allocation).
 
 | Symbol | Type         | Rationale                                          |
 |--------|--------------|-----------------------------------------------------|
@@ -51,7 +51,7 @@ Evaluated weekly on the most recent **completed** daily bar:
 | flat          | close > 1.02 × SMA_200       | enter     |
 | either        | anything between those lines | unchanged |
 
-The band is hysteresis, not a threshold — the same price gives a different answer depending on whether the sleeve is currently held. That is what keeps turnover near 7×/yr instead of ~20×/yr when price oscillates around the average.
+The band is hysteresis, not a threshold — the same price gives a different answer depending on whether the sleeve is currently held. That is what keeps turnover near 5×/yr instead of ~20×/yr when price oscillates around the average.
 
 A sleeve that is off, or that could not be priced, leaves its capital **in cash**. Weight is never redistributed to the remaining sleeves.
 
@@ -71,16 +71,50 @@ Validated 2018-11 → 2026-07 on the eight-symbol universe:
 
 |                | overlay | buy & hold |
 |----------------|---------|------------|
-| CAGR           | 27.9%   | 39.1%      |
-| Sharpe         | 1.24    | 1.15       |
-| Max drawdown   | **−25.6%** | −50.0%  |
-| MAR            | 1.09    | 0.78       |
+| CAGR           | 30.0%   | 39.1%      |
+| Sharpe         | 1.26    | 1.15       |
+| Max drawdown   | **−27.7%** | −50.0%  |
+| MAR            | 1.08    | 0.78       |
 
 **What survived validation:** the drawdown reduction. In a block bootstrap the overlay produced the shallower drawdown in 98.7%–100% of resamples across four different universes, and it beat a *matched-exposure static control* in every window tested.
 
 **What did not:** any risk-adjusted return advantage. In the out-of-sample half the overlay scored Sharpe 1.56 against buy-and-hold's 1.57 and a constant-50%-exposure control's 1.62 — a dead heat. It beat buy-and-hold in **2 of 9 calendar years**, both of them down years.
 
 The backtest window contains no 2000- or 2008-style bear market, so treat the absolute figures as optimistic. If the objective were maximum wealth rather than a tolerable drawdown, buy-and-hold with no application at all would be the honest recommendation.
+
+---
+
+## Capital allocation
+
+**Sizing uses the capital you allocate, not your account balance.** Set `TRADING_CAPITAL` and the strategy trades that:
+
+    strategy capital = market value of managed sleeves + the strategy's own cash ledger
+
+A paper account funded with $100,000 still trades the $1,000 you allocated. Without this the app would deploy the whole balance — a 100× over-deployment. Profits compound: once the sleeves are worth $1,100 it sizes off $1,100. Money deposited into the account but never allocated stays invisible to it. Account equity and cash act as ceilings only.
+
+`TRADING_CAPITAL` is **required** — the app refuses to start rather than guess how much money to deploy.
+
+The account is assumed dedicated to this strategy. Positions held outside `SYMBOLS` are never sold and never counted as strategy capital, but each run warns about them. A short position in a managed symbol aborts the run: this strategy is long-only.
+
+---
+
+## Costs, fees and tax
+
+**Trading costs are modelled. Tax is not.** The 5 bps/side charged in the backtest covers Alpaca's $0 commission, the SEC fee (~0.00278% on sells), the FINRA TAF, and the bid-ask spread on these liquid names.
+
+**Every rebalance sell is a taxable event in a taxable account.** Buy-and-hold defers tax indefinitely — a structural advantage the pre-tax table above does not show. Over the 2018–2026 backtest on a $100,000 base:
+
+| DRIFT_TOLERANCE | orders | realised gains | short-term | est. tax¹ |
+|---|---|---|---|---|
+| 0.1% | 1,727 | $435,740 | $197,746 | $98,978 |
+| **5% (default)** | **124** | $426,109 | $110,294 | **$82,666** |
+| regime-only | 97 | $269,195 | $9,813 | $42,047 |
+
+¹ at 32% short-term / 15% long-term; your rates differ, state tax is extra.
+
+This is why `DRIFT_TOLERANCE` defaults to 5%: drift trades were 94% of all orders and bought nothing. At 5% the backtest returns a *higher* CAGR and Sharpe with 93% fewer trades.
+
+**Tax makes this strategy's position versus buy-and-hold worse, not better.** In a tax-advantaged account (IRA/Roth/401k) rebalancing is tax-free and this section is moot — which materially changes where the strategy belongs.
 
 ---
 
@@ -113,7 +147,7 @@ The backtest window contains no 2000- or 2008-style bear market, so treat the ab
                      │
 ┌────────────────────▼────────────────────────────────┐
 │              State & Scheduler Layer                │
-│  SQLite — sleeves, rebalance_log, trade_log         │
+│  SQLite — sleeves, strategy_state, rebalance_log     │
 │  APScheduler — rebalance Fri 16:15 ET               │
 │              + heartbeat Sat 09:00 ET               │
 └─────────────────────────────────────────────────────┘
@@ -143,13 +177,12 @@ swing-trader/
 ├── src/
 │   ├── config.py       # Loads .env, exposes typed Settings dataclass
 │   ├── data.py         # Alpaca data fetching; drops the forming bar
-│   ├── indicators.py   # SMA_200 + legacy indicator columns
+│   ├── indicators.py   # SMA_200 (the only column any code reads)
 │   ├── portfolio.py    # THE STRATEGY — regime, weights, order diffing
-│   ├── risk.py         # Legacy position dataclass (retired strategy)
-│   ├── database.py     # SQLite — sleeves, rebalance_log, trade_log
+│   ├── database.py     # SQLite — sleeves, strategy_state, rebalance_log
 │   ├── notifier.py     # Telegram plan/result alerts + reply handler
 │   └── executor.py     # Alpaca orders + holdings fetch
-├── tests/              # 285 unit tests
+├── tests/              # 249 unit tests
 ├── docs/               # Architecture, phases, and strategy validation
 ├── scripts/            # Data validation, DB pull/migrate, order smoke-test
 ├── main.py             # Entry point — weekly rebalance scheduler
@@ -189,12 +222,15 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 # Universe
 SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
 
+# Capital — REQUIRED. Sizing uses THIS, not your account balance.
+TRADING_CAPITAL=1000       # a $100k paper account still trades $1k
+
 # Strategy
 SMA_BAND=0.02              # exit <0.98×SMA200, enter >1.02×
 BARS_LOOKBACK_DAYS=365     # must comfortably exceed 200 trading days
 
 # Rebalancing
-DRIFT_TOLERANCE=0.001      # skip trades below 0.1% of equity
+DRIFT_TOLERANCE=0.05       # skip drift trades below 5% of capital; a TAX dial
 MIN_ORDER_NOTIONAL=1.0
 REBALANCE_DAY=fri
 REBALANCE_HOUR=16

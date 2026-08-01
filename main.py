@@ -35,13 +35,16 @@ from src.config import settings
 from src.data import get_historical_bars
 from src.database import (
     get_regime_states,
+    get_strategy_cash,
     get_weekly_summary,
     init_db,
     log_event,
     log_rebalance_order,
     set_regime_state,
+    set_strategy_cash,
 )
 from src.executor import (
+    get_account_cash,
     get_account_equity,
     get_current_holdings,
     place_buy_order,
@@ -240,6 +243,46 @@ def _execute_plan(
 # Weekly rebalance
 # ---------------------------------------------------------------------------
 
+def compute_strategy_equity(
+    holdings: dict[str, dict],
+    strategy_cash: float,
+    account_equity: float,
+    account_cash: float,
+) -> float:
+    """
+    Capital this strategy is allowed to deploy — NOT the account balance.
+
+    A paper account funded with $100,000 must still trade the $1,000 allocated
+    to it, so sizing uses:
+
+        managed sleeve value  +  the strategy's own cash ledger
+
+    Profits compound: once the sleeves are worth $1,100 the strategy sizes off
+    $1,100. Money in the account that was never allocated is invisible to it.
+
+    Both account figures act as ceilings. If the ledger ever claims more than
+    the account actually holds — a manual withdrawal, a mis-recorded fill — the
+    account wins, because we can never deploy money that is not there.
+    """
+    managed_value = sum(
+        v["notional"] for s, v in holdings.items() if s in settings.symbols
+    )
+    equity = managed_value + min(strategy_cash, account_cash)
+
+    if equity > account_equity:
+        logger.warning(
+            "Strategy ledger ($%.2f) exceeds account equity ($%.2f) — capping",
+            equity, account_equity,
+        )
+        equity = account_equity
+
+    logger.info(
+        "Strategy equity $%.2f (managed $%.2f + cash $%.2f) vs account $%.2f",
+        equity, managed_value, strategy_cash, account_equity,
+    )
+    return equity
+
+
 def _warn_on_unmanaged_holdings(holdings: dict[str, dict]) -> None:
     """
     Flag positions in the account that this strategy does not manage.
@@ -271,7 +314,8 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
     logger.info("=== Rebalance start ===")
 
     try:
-        equity = get_account_equity()
+        account_equity = get_account_equity()
+        account_cash = get_account_cash()
         holdings = get_current_holdings()
     except Exception:
         logger.exception("Account state fetch failed — aborting rebalance")
@@ -294,6 +338,10 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
         return
 
     _warn_on_unmanaged_holdings(holdings)
+
+    strategy_cash = get_strategy_cash(conn, settings.trading_capital)
+    equity = compute_strategy_equity(
+        holdings, strategy_cash, account_equity, account_cash)
 
     states = _evaluate_regimes(conn)
     if not states:
@@ -327,13 +375,20 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
         send_error_alert(f"Rebalance aborted: {exc}")
         return
 
+    affordable = sum(o.notional for o in orders if o.increases_exposure)
+    if affordable > account_cash:
+        logger.warning(
+            "Planned buys $%.2f exceed account cash $%.2f — broker may reject some",
+            affordable, account_cash,
+        )
+
     log_event(conn, "PORTFOLIO", "plan", {
         "equity": equity,
         "weights": weights,
         "orders": [vars(o) for o in orders],
     })
 
-    send_rebalance_plan(orders, states, equity)
+    send_rebalance_plan(orders, states, equity, account_equity)
 
     if not orders:
         logger.info("No orders required — rebalance complete")
@@ -342,6 +397,7 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
 
     approved = _await_approval(orders)
     results = _execute_plan(conn, orders, holdings, approved)
+    _update_strategy_cash(conn, strategy_cash, results)
 
     # A partial fill also needs attention: money moved but the portfolio is not
     # at target, so it must not pass silently.
@@ -354,6 +410,31 @@ def _run_rebalance(conn: sqlite3.Connection) -> None:
 
     send_rebalance_result(results)
     logger.info("=== Rebalance end ===")
+
+
+def _update_strategy_cash(
+    conn: sqlite3.Connection,
+    opening_cash: float,
+    results: list[dict],
+) -> float:
+    """
+    Move the strategy's cash ledger by what actually transacted.
+
+    Only fills count. A skipped or failed order moved no money, so counting it
+    would drift the ledger away from reality and mis-size every later rebalance.
+    """
+    spent = sum(r["notional"] for r in results
+                if r["side"] == "buy" and r["status"] in ("filled", "partial"))
+    received = sum(r["notional"] for r in results
+                   if r["side"] == "sell" and r["status"] in ("filled", "partial"))
+
+    closing = max(0.0, opening_cash - spent + received)
+    set_strategy_cash(conn, closing)
+    logger.info(
+        "Strategy cash: $%.2f -> $%.2f (bought $%.2f, sold $%.2f)",
+        opening_cash, closing, spent, received,
+    )
+    return closing
 
 
 def _await_approval(orders: list[RebalanceOrder]) -> bool:

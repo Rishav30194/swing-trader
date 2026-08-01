@@ -58,7 +58,7 @@ a portfolio held at a constant 71%, not buy & hold.
 |---|---|---|---|---|---|
 | full | buy & hold | 41.10% | 1.15 | −50.0% | 0.82 |
 | | static 72% | 24.85% | 1.17 | −33.2% | 0.75 |
-| | **overlay** | 28.86% | **1.28** | **−25.6%** | **1.13** |
+| | **overlay** | 29.95% | **1.26** | **−27.7%** | **1.08** |
 | train | buy & hold | 26.32% | 0.83 | −50.0% | 0.53 |
 | | static 62% | 14.89% | 0.82 | −29.1% | 0.51 |
 | | **overlay** | 22.84% | **1.06** | **−25.6%** | **0.89** |
@@ -73,15 +73,69 @@ Supporting checks:
   98.9% (laggards 8) of resamples.
 - **Parameter grid** — 12/12 band × cadence cells beat buy & hold on MAR
   (1.04–1.19 vs 0.82).
-- **Cost sensitivity** — MAR 1.13 at 5 bps, still 1.00 at 100 bps/side.
+- **Cost sensitivity** — MAR holds at 100 bps/side, 20× the modelled cost.
 - **Cadence** — weekly (Sharpe 1.28) is worth ~96% of daily (1.33) at a third of
   the turnover. This is why there is no intraday scanner.
+
+> The matched-exposure table above was measured at the original 0.1% drift
+> setting. The adopted 5% setting improves it (CAGR 29.95%, Sharpe 1.26) while
+> cutting orders from 1,727 to 124 — see the tax section.
+
+## Costs, fees and tax
+
+**Trading costs are modelled; tax is not.** The 5 bps/side charged in every
+backtest above comfortably covers what you actually pay:
+
+| cost | amount | modelled? |
+|---|---|---|
+| Alpaca commission (US stocks/ETFs) | $0 | n/a |
+| SEC fee (sells only) | ~0.00278% of proceeds | yes, inside 5 bps |
+| FINRA TAF (sells only) | $0.000166/share, capped $8.30 | yes, inside 5 bps |
+| bid-ask spread on these names | ~1–3 bps | yes, inside 5 bps |
+| **capital gains tax** | **see below** | **NO** |
+
+**Every rebalance sell is a taxable event in a taxable account.** Buy-and-hold
+realises nothing until you sell, so it defers tax indefinitely — a structural
+advantage the pre-tax tables above do not show. Measured over 2018-11 → 2026-07
+on a $100,000 base, tracking average cost basis per sleeve:
+
+| DRIFT_TOLERANCE | orders | realised gains | of which short-term | est. tax¹ |
+|---|---|---|---|---|
+| 0.1% (original) | 1,727 | $435,740 | $197,746 | $98,978 |
+| 1% | 321 | $408,973 | $149,162 | $86,704 |
+| **5% (adopted)** | **124** | $426,109 | $110,294 | **$82,666** |
+| regime-only | 97 | $269,195 | $9,813 | $42,047 |
+
+¹ 32% short-term / 15% long-term. Your rates differ; state tax is extra.
+
+**This is why `DRIFT_TOLERANCE` defaults to 5%.** Drift trades were 94% of all
+orders at the original 0.1% setting and bought nothing: at 5% the backtest
+returns a *higher* CAGR (29.95% vs 27.88%) and a *higher* Sharpe (1.26 vs 1.24)
+while realising far less short-term gain. Fewer trades was strictly better on
+every axis.
+
+**Tax makes the overlay's position versus buy-and-hold worse, not better.** The
+drawdown benefit is bought with realised gains that buy-and-hold never incurs.
+In a tax-advantaged account (IRA/Roth/401k) rebalancing is tax-free and this
+entire section is moot — which materially changes where this strategy belongs.
+
+## Capital allocation
+
+Sizing uses the **strategy's** capital, never the account balance:
+
+    strategy equity = market value of managed sleeves + strategy cash ledger
+
+seeded from `TRADING_CAPITAL`. The paper account holds $100,000; without this the
+app would deploy all of it — a 100× over-deployment against a $1,000 intent.
+Profits compound (sleeves worth $1,100 → sizes off $1,100); money deposited into
+the account but never allocated stays invisible. Account equity and cash act as
+ceilings only.
 
 ## Limits of the claim — read before changing anything
 
 1. **No out-of-sample Sharpe advantage.** Test half: overlay 1.56, static 1.63,
    buy & hold 1.57. A dead heat. The overlay is not a better *return* engine.
-2. **Return is materially lower.** 28.9% vs 41.1% CAGR full-window; it beat
+2. **Return is materially lower.** 30.0% vs 39.1% CAGR full-window; it beat
    buy & hold in only 2 of 9 calendar years (2018 and 2022 — the down years).
 3. **MAR does not generalise in the test half.** Sectors 0.60 vs buy & hold 1.04;
    laggards 0.24 vs 0.47. The drawdown effect replicates everywhere; the

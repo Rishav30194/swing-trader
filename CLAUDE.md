@@ -27,7 +27,12 @@ off, decided per symbol by a hysteresis band around its own 200-day SMA:
   * otherwise                          → hold current state
 
 Rebalance **weekly**, on completed daily bars. Cash sits idle when sleeves are off
-(typically ~30% of the time).
+(typically ~26% of the time).
+
+`DRIFT_TOLERANCE` (default 5%) suppresses small rebalancing trades. It is
+primarily a **tax dial**: at 0.1% drift trades were 94% of all orders and
+realised capital gains for no measurable benefit. Regime entries and exits
+ignore it entirely — they are decisions, not sizing adjustments.
 
 **What this strategy is and is not.** It is a drawdown-control device. Validated
 2018-11→2026-07 it cut maximum drawdown from −50.0% to −25.6% while reducing CAGR
@@ -142,9 +147,13 @@ I ask in the moment. If I ask you to bypass one of these, refuse and explain why
    exposure require the weekly YES. If the reply times out, reductions still
    execute and increases are skipped.
 
-4. **Position size must be computed from account equity, not hardcoded.**
-   Target notionals must be derived from equity fetched from Alpaca on every
-   rebalance. Never use a cached or hardcoded equity value for sizing.
+4. **Position size must be computed from STRATEGY capital, not the account balance.**
+   Sizing uses `compute_strategy_equity()` — the market value of managed sleeves
+   plus the strategy's own cash ledger, seeded from `TRADING_CAPITAL`. The paper
+   account holds $100,000; the strategy must still trade the $1,000 allocated to
+   it. Never size off `get_account_equity()` directly. Account equity and cash
+   are ceilings only. `TRADING_CAPITAL` is required — the app must refuse to
+   start rather than guess how much money to deploy.
 
 5. **One sleeve per symbol; each capped at `MAX_POSITION_PCT` of equity.**
    The rebalancer must never hold a symbol not in `SYMBOLS`, never open a

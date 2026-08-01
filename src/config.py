@@ -81,8 +81,10 @@ class Settings:
     bars_lookback_days: int
 
     # --- Rebalancing ---
-    # Skip rebalance trades smaller than this fraction of equity, to avoid
-    # churning on dust. Regime transitions are a full sleeve and never affected.
+    # Skip DRIFT trades smaller than this fraction of equity. Regime entries and
+    # exits ignore it entirely — they are decisions, not sizing adjustments.
+    # This is primarily a tax dial: drift trades are ~93% of all orders at 0.1%
+    # and realise capital gains for no measurable benefit.
     drift_tolerance: float
 
     # Alpaca rejects notional orders below $1.
@@ -96,8 +98,15 @@ class Settings:
     # Seconds to wait for the weekly YES/NO reply before skipping increases.
     reply_timeout_secs: int
 
-    # Max fraction of equity to deploy in a single sleeve (e.g. 0.25 = 25%).
+    # Max fraction of strategy capital to deploy in a single sleeve.
     max_position_pct: float
+
+    # Capital allocated to this strategy, in dollars. Sizing uses THIS, not the
+    # account balance: a paper account funded with $100,000 must still trade the
+    # $1,000 you intend. Profits compound on top of it — once the strategy's own
+    # holdings are worth $1,100, it sizes off $1,100 — but money sitting in the
+    # account that was never allocated is never touched.
+    trading_capital: float
 
     # --- Derived convenience properties ---
 
@@ -152,7 +161,9 @@ def _load_settings() -> Settings:
         sma_band=float(_get("SMA_BAND", "0.02")),
         bars_lookback_days=int(_get("BARS_LOOKBACK_DAYS", "365")),
 
-        drift_tolerance=float(_get("DRIFT_TOLERANCE", "0.001")),
+        # 5%: 124 orders over the 2018-2026 backtest versus 1,727 at 0.1%, with
+        # slightly BETTER Sharpe and CAGR, and ~$16k less tax on a $100k base.
+        drift_tolerance=float(_get("DRIFT_TOLERANCE", "0.05")),
         min_order_notional=float(_get("MIN_ORDER_NOTIONAL", "1.0")),
 
         rebalance_day=_get("REBALANCE_DAY", "fri"),
@@ -164,6 +175,7 @@ def _load_settings() -> Settings:
         # that stepping away from the phone does not silently skip the increases.
         reply_timeout_secs=int(_get("REPLY_TIMEOUT_SECS", "14400")),
         max_position_pct=float(_get("MAX_POSITION_PCT", "0.25")),
+        trading_capital=float(_require("TRADING_CAPITAL")),
     )
 
 

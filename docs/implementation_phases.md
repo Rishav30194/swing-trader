@@ -297,7 +297,26 @@ same bars.
       cannot diverge
 - [x] `validate_oos.py` — matched-exposure control, train/test, block bootstrap
 - [x] Delete `signals.py` and its tests
-- [x] 285 unit tests passing (`main.py` and `data.py` previously had none)
+- [x] 249 unit tests passing (`main.py` and `data.py` previously had none)
+
+### Audit round 2 — money-path review (2026-08-01)
+- [x] **Capital was sized off the account balance, not the allocation.** The paper
+      account holds $99,999.99, so the app would have deployed $12,500 per sleeve
+      instead of $125 — a **100× over-deployment**. Sizing now uses
+      `compute_strategy_equity()`: managed sleeve value + a persisted cash ledger
+      seeded from the required `TRADING_CAPITAL`. Profits compound; unallocated
+      money is invisible; account equity and cash are ceilings only.
+- [x] **`drift_tolerance` silently gated regime transitions.** Above 1/N it
+      suppressed entries and exits too — at 25% the backtest placed *zero* orders.
+      It now applies only to drift; regime decisions respect the broker minimum.
+- [x] **Tax was unaccounted for.** Measured realised gains per setting: drift
+      trades were 94% of all orders and bought nothing. `DRIFT_TOLERANCE` default
+      raised 0.1% → 5%: orders 1,727 → 124, CAGR 27.88% → 29.95%, Sharpe
+      1.24 → 1.26, and ~$16k less tax on a $100k base.
+- [x] Long-only guard: a short position in a managed symbol aborts the run
+- [x] Unmanaged holdings warned about, never sold, never counted as capital
+- [x] Dead code removed — `risk.py`, `test_risk.py`, the `positions` helpers, and
+      nine indicator columns nothing read (~700 lines)
 - [x] Backtest reproduces the validated figures (maxDD −25.56% exact match)
 
   > **Bug caught by that integration check:** `compute_target_weights` divided by

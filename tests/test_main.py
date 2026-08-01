@@ -13,6 +13,7 @@ quietly rather than on the happy path:
 No network calls: Alpaca, Telegram, and the database are all mocked.
 """
 
+from contextlib import ExitStack
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
@@ -280,150 +281,123 @@ class TestEvaluateRegimes:
 # ---------------------------------------------------------------------------
 
 class TestRunRebalance:
-    def _base(self, states=None, orders=None):
-        states = states if states is not None else {"NVDA": RegimeState(on=True)}
-        return {
-            "get_account_equity": patch.object(main, "get_account_equity", return_value=1000.0),
-            "get_current_holdings": patch.object(main, "get_current_holdings", return_value={}),
-            "_evaluate_regimes": patch.object(main, "_evaluate_regimes", return_value=states),
-            "log_event": patch.object(main, "log_event"),
-            "send_rebalance_plan": patch.object(main, "send_rebalance_plan", return_value=True),
-            "send_rebalance_result": patch.object(main, "send_rebalance_result"),
-            "send_error_alert": patch.object(main, "send_error_alert"),
-        }
+    """
+    Drives the whole cycle with every boundary mocked. `_run` applies a working
+    set of defaults so each test only states the one thing it is varying.
+    """
+
+    DEFAULTS = {
+        "get_account_equity": 100_000.0,      # deliberately NOT the strategy's capital
+        "get_account_cash": 100_000.0,
+        "get_strategy_cash": 1_000.0,
+        "get_current_holdings": {},
+        "_evaluate_regimes": {"NVDA": RegimeState(on=True)},
+        "send_rebalance_plan": True,
+        "_await_approval": False,     # never let a real Telegram poll start
+    }
+    VOID = ("log_event", "set_strategy_cash", "send_rebalance_result",
+            "send_error_alert", "_execute_plan")
+
+    def _run(self, symbols=("NVDA",), **overrides):
+        """Run one rebalance; returns the dict of patched mocks."""
+        def _patch(name, value):
+            if isinstance(value, dict) and "__raises__" in value:
+                return patch.object(main, name, side_effect=value["__raises__"])
+            return patch.object(main, name, return_value=value)
+
+        with ExitStack() as stack:
+            mocks = {}
+            values = {**self.DEFAULTS, **overrides}
+            for name, value in values.items():
+                mocks[name] = stack.enter_context(_patch(name, value))
+            for name in self.VOID:
+                if name not in mocks:
+                    mocks[name] = stack.enter_context(patch.object(main, name))
+            stack.enter_context(_settings(symbols=symbols))
+            main._run_rebalance(MagicMock())
+            return mocks
+
+    def _raises(self, exc):
+        return {"__raises__": exc}
+
+    def test_sizes_off_strategy_capital_not_account_equity(self):
+        """A $100k paper account must still trade the $1k allocated to it."""
+        mocks = self._run(symbols=("NVDA",) * 8, _execute_plan=[])
+        orders = mocks["send_rebalance_plan"].call_args[0][0]
+        assert len(orders) == 1
+        assert orders[0].notional == pytest.approx(125.0)      # 1/8 of $1,000
+        assert orders[0].notional != pytest.approx(12_500.0)   # 1/8 of $100,000
+
+    def test_plan_message_shows_both_capital_and_account(self):
+        mocks = self._run(_execute_plan=[])
+        args = mocks["send_rebalance_plan"].call_args[0]
+        assert args[2] == pytest.approx(1_000.0)     # strategy capital
+        assert args[3] == pytest.approx(100_000.0)   # account equity
+
+    def test_profits_compound_into_deployable_capital(self):
+        """Once the sleeves are worth more, the strategy sizes off the larger figure."""
+        holdings = {"NVDA": {"shares": 1.0, "notional": 1_100.0}}
+        mocks = self._run(symbols=("NVDA",) * 8,
+                          get_current_holdings=holdings, get_strategy_cash=0.0,
+                          _execute_plan=[])
+        assert mocks["send_rebalance_plan"].call_args[0][2] == pytest.approx(1_100.0)
 
     def test_aborts_when_equity_fetch_fails(self):
-        with patch.object(main, "get_account_equity", side_effect=RuntimeError("down")), \
-             patch.object(main, "get_current_holdings"), \
-             patch.object(main, "_evaluate_regimes") as regimes, \
-             patch.object(main, "send_error_alert") as alert:
-            main._run_rebalance(MagicMock())
-        regimes.assert_not_called()
-        alert.assert_called_once()
+        mocks = self._run(get_account_equity=self._raises(RuntimeError("down")))
+        mocks["_evaluate_regimes"].assert_not_called()
+        mocks["send_error_alert"].assert_called_once()
 
     def test_aborts_when_holdings_fetch_fails(self):
         """Acting on an unknown portfolio state is worse than doing nothing."""
-        with patch.object(main, "get_account_equity", return_value=1000.0), \
-             patch.object(main, "get_current_holdings", side_effect=RuntimeError("down")), \
-             patch.object(main, "_evaluate_regimes") as regimes, \
-             patch.object(main, "send_error_alert") as alert:
-            main._run_rebalance(MagicMock())
-        regimes.assert_not_called()
-        alert.assert_called_once()
+        mocks = self._run(get_current_holdings=self._raises(RuntimeError("down")))
+        mocks["_evaluate_regimes"].assert_not_called()
+        mocks["send_error_alert"].assert_called_once()
 
     def test_aborts_when_no_symbol_could_be_evaluated(self):
-        p = self._base(states={})
-        with p["get_account_equity"], p["get_current_holdings"], p["_evaluate_regimes"], \
-             p["send_error_alert"] as alert, \
-             patch.object(main, "send_rebalance_plan") as plan:
-            main._run_rebalance(MagicMock())
-        plan.assert_not_called()
-        alert.assert_called_once()
+        mocks = self._run(_evaluate_regimes={})
+        mocks["send_rebalance_plan"].assert_not_called()
+        mocks["send_error_alert"].assert_called_once()
 
     def test_sends_plan_and_stops_when_no_orders_needed(self):
-        # already at target: 1/8 of 1000 = 125 held
-        p = self._base()
-        with p["get_account_equity"], \
-             patch.object(main, "get_current_holdings",
-                          return_value={"NVDA": {"shares": 1.0, "notional": 125.0}}), \
-             p["_evaluate_regimes"], p["log_event"], \
-             p["send_rebalance_plan"] as plan, \
-             patch.object(main, "send_rebalance_result") as result, \
-             _settings(symbols=("NVDA",) * 8):
-            main._run_rebalance(MagicMock())
-        plan.assert_called_once()
-        result.assert_not_called()
-
-    def test_reductions_execute_even_when_telegram_send_fails(self):
-        """Hard rule 3 — de-risking must never depend on Telegram."""
-        states = {"NVDA": RegimeState(on=False)}
-        p = self._base(states=states)
-        with p["get_account_equity"], \
-             patch.object(main, "get_current_holdings",
-                          return_value={"NVDA": {"shares": 1.0, "notional": 250.0}}), \
-             p["_evaluate_regimes"], p["log_event"], \
-             patch.object(main, "send_rebalance_plan", return_value=False), \
-             patch.object(main, "send_rebalance_result"), \
-             patch.object(main, "send_error_alert"), \
-             patch.object(main, "_execute_order",
-                          return_value={"symbol": "NVDA", "side": "sell",
-                                        "notional": 250.0, "status": "filled"}) as ex, \
-             _settings(symbols=("NVDA",)):
-            main._run_rebalance(MagicMock())
-        ex.assert_called_once()
-        assert ex.call_args[0][1].side == "sell"
-
-    def test_alerts_when_an_order_fails(self):
-        states = {"NVDA": RegimeState(on=False)}
-        p = self._base(states=states)
-        with p["get_account_equity"], \
-             patch.object(main, "get_current_holdings",
-                          return_value={"NVDA": {"shares": 1.0, "notional": 250.0}}), \
-             p["_evaluate_regimes"], p["log_event"], p["send_rebalance_plan"], \
-             patch.object(main, "send_rebalance_result"), \
-             patch.object(main, "send_error_alert") as alert, \
-             patch.object(main, "_execute_order",
-                          return_value={"symbol": "NVDA", "side": "sell",
-                                        "notional": 250.0, "status": "failed"}), \
-             _settings(symbols=("NVDA",)):
-            main._run_rebalance(MagicMock())
-        alert.assert_called_once()
-
-    def test_alerts_on_partial_fill(self):
-        states = {"NVDA": RegimeState(on=False)}
-        p = self._base(states=states)
-        with p["get_account_equity"], \
-             patch.object(main, "get_current_holdings",
-                          return_value={"NVDA": {"shares": 1.0, "notional": 250.0}}), \
-             p["_evaluate_regimes"], p["log_event"], p["send_rebalance_plan"], \
-             patch.object(main, "send_rebalance_result"), \
-             patch.object(main, "send_error_alert") as alert, \
-             patch.object(main, "_execute_order",
-                          return_value={"symbol": "NVDA", "side": "sell",
-                                        "notional": 100.0, "status": "partial"}), \
-             _settings(symbols=("NVDA",)):
-            main._run_rebalance(MagicMock())
-        alert.assert_called_once()
+        # already at target: 1/8 of $1,000 equity, held exactly
+        holdings = {"NVDA": {"shares": 1.0, "notional": 125.0}}
+        mocks = self._run(symbols=("NVDA",) * 8,
+                          get_current_holdings=holdings, get_strategy_cash=875.0)
+        mocks["send_rebalance_plan"].assert_called_once()
+        mocks["send_rebalance_result"].assert_not_called()
 
     def test_validation_failure_alerts_instead_of_escaping(self):
-        """
-        A hard-rule violation must reach the user. If it escapes into APScheduler
-        it is logged and swallowed, and the rebalance silently stops happening.
-        """
-        p = self._base()
-        with p["get_account_equity"], p["get_current_holdings"], p["_evaluate_regimes"], \
-             patch.object(main, "validate_target_weights",
-                          side_effect=ValueError("hard rule 5 violated")), \
-             patch.object(main, "send_error_alert") as alert, \
-             patch.object(main, "_execute_plan") as execute:
-            main._run_rebalance(MagicMock())     # must not raise
-        alert.assert_called_once()
-        execute.assert_not_called()
+        """A hard-rule violation must reach the user, not die in APScheduler."""
+        mocks = self._run(validate_target_weights=self._raises(
+            ValueError("hard rule 5 violated")))
+        mocks["send_error_alert"].assert_called_once()
+        mocks["_execute_plan"].assert_not_called()
 
     def test_no_orders_are_placed_when_sizing_fails(self):
-        p = self._base()
-        with p["get_account_equity"], p["get_current_holdings"], p["_evaluate_regimes"], \
-             patch.object(main, "diff_to_orders", side_effect=ValueError("bad equity")), \
-             patch.object(main, "send_error_alert"), \
-             patch.object(main, "_execute_order") as ex:
-            main._run_rebalance(MagicMock())
-        ex.assert_not_called()
+        mocks = self._run(diff_to_orders=self._raises(ValueError("bad equity")))
+        mocks["_execute_plan"].assert_not_called()
+
+    def test_alerts_when_an_order_fails(self):
+        mocks = self._run(_execute_plan=[
+            {"symbol": "NVDA", "side": "buy", "notional": 125.0, "status": "failed"}])
+        mocks["send_error_alert"].assert_called_once()
+
+    def test_alerts_on_partial_fill(self):
+        mocks = self._run(_execute_plan=[
+            {"symbol": "NVDA", "side": "buy", "notional": 60.0, "status": "partial"}])
+        mocks["send_error_alert"].assert_called_once()
+
+    def test_cash_ledger_is_updated_after_execution(self):
+        mocks = self._run(_execute_plan=[
+            {"symbol": "NVDA", "side": "buy", "notional": 125.0, "status": "filled"}])
+        mocks["set_strategy_cash"].assert_called_once()
+        assert mocks["set_strategy_cash"].call_args[0][1] == pytest.approx(875.0)
 
     def test_plan_is_json_serialisable_for_the_event_log(self):
         """log_event JSON-encodes the plan; a non-serialisable order would crash it."""
         import json
-        states = {"NVDA": RegimeState(on=True)}
-        p = self._base(states=states)
-        captured = {}
-        with p["get_account_equity"], p["get_current_holdings"], p["_evaluate_regimes"], \
-             patch.object(main, "log_event",
-                          side_effect=lambda c, s, e, d: captured.update(d)), \
-             p["send_rebalance_plan"], patch.object(main, "send_rebalance_result"), \
-             patch.object(main, "_await_approval", return_value=False), \
-             patch.object(main, "_execute_plan", return_value=[]), \
-             _settings(symbols=("NVDA",)):
-            main._run_rebalance(MagicMock())
-        json.dumps(captured)   # must not raise
+        mocks = self._run(_execute_plan=[])
+        json.dumps(mocks["log_event"].call_args[0][3])
 
 
 # ---------------------------------------------------------------------------
@@ -517,3 +491,92 @@ class TestShortPositionGuard:
              _settings(symbols=("NVDA",)):
             main._run_rebalance(MagicMock())
         regimes.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# compute_strategy_equity — the $1,000-in-a-$100,000-account problem
+# ---------------------------------------------------------------------------
+
+class TestComputeStrategyEquity:
+    def test_uses_allocation_not_account_balance(self):
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity({}, 1_000.0, 100_000.0, 100_000.0)
+        assert eq == pytest.approx(1_000.0)
+
+    def test_managed_value_plus_cash(self):
+        holdings = {"NVDA": {"shares": 1.0, "notional": 600.0}}
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity(holdings, 400.0, 100_000.0, 100_000.0)
+        assert eq == pytest.approx(1_000.0)
+
+    def test_profits_compound(self):
+        """$1,000 that grew to $1,100 becomes $1,100 of deployable capital."""
+        holdings = {"NVDA": {"shares": 1.0, "notional": 1_100.0}}
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity(holdings, 0.0, 100_000.0, 100_000.0)
+        assert eq == pytest.approx(1_100.0)
+
+    def test_unmanaged_positions_are_excluded(self):
+        """A manually-held stock must not inflate the strategy's capital."""
+        holdings = {"NVDA": {"shares": 1.0, "notional": 500.0},
+                    "TSLA": {"shares": 10.0, "notional": 50_000.0}}
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity(holdings, 500.0, 100_000.0, 100_000.0)
+        assert eq == pytest.approx(1_000.0)
+
+    def test_capped_by_account_equity(self):
+        """The ledger can never authorise more than the account actually holds."""
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity({}, 5_000.0, 800.0, 800.0)
+        assert eq == pytest.approx(800.0)
+
+    def test_cash_capped_by_account_cash(self):
+        with _settings(symbols=("NVDA",)):
+            eq = main.compute_strategy_equity({}, 1_000.0, 100_000.0, 250.0)
+        assert eq == pytest.approx(250.0)
+
+    def test_empty_account_gives_zero(self):
+        with _settings(symbols=("NVDA",)):
+            assert main.compute_strategy_equity({}, 0.0, 0.0, 0.0) == pytest.approx(0.0)
+
+
+class TestUpdateStrategyCash:
+    def _r(self, side, notional, status):
+        return {"symbol": "NVDA", "side": side, "notional": notional, "status": status}
+
+    def test_buy_reduces_cash(self):
+        conn = MagicMock()
+        with patch.object(main, "set_strategy_cash") as setter:
+            closing = main._update_strategy_cash(conn, 1_000.0, [self._r("buy", 125.0, "filled")])
+        assert closing == pytest.approx(875.0)
+        setter.assert_called_once()
+
+    def test_sell_increases_cash(self):
+        with patch.object(main, "set_strategy_cash"):
+            closing = main._update_strategy_cash(
+                MagicMock(), 100.0, [self._r("sell", 250.0, "filled")])
+        assert closing == pytest.approx(350.0)
+
+    def test_skipped_orders_do_not_move_the_ledger(self):
+        with patch.object(main, "set_strategy_cash"):
+            closing = main._update_strategy_cash(
+                MagicMock(), 1_000.0, [self._r("buy", 125.0, "skipped")])
+        assert closing == pytest.approx(1_000.0)
+
+    def test_failed_orders_do_not_move_the_ledger(self):
+        with patch.object(main, "set_strategy_cash"):
+            closing = main._update_strategy_cash(
+                MagicMock(), 1_000.0, [self._r("buy", 125.0, "failed")])
+        assert closing == pytest.approx(1_000.0)
+
+    def test_partial_fills_do_move_the_ledger(self):
+        with patch.object(main, "set_strategy_cash"):
+            closing = main._update_strategy_cash(
+                MagicMock(), 1_000.0, [self._r("buy", 60.0, "partial")])
+        assert closing == pytest.approx(940.0)
+
+    def test_never_goes_negative(self):
+        with patch.object(main, "set_strategy_cash"):
+            closing = main._update_strategy_cash(
+                MagicMock(), 100.0, [self._r("buy", 500.0, "filled")])
+        assert closing == pytest.approx(0.0)
