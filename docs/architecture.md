@@ -10,7 +10,7 @@ Technical reference. For what the app does and whether you should use it, see th
 | Broker / data | Alpaca Markets API    | Same SDK for paper and live              |
 | SDK           | `alpaca-py`           |                                          |
 | Data          | `pandas`              | OHLCV frames                             |
-| Indicators    | `pandas-ta`           | 200-day SMA only                         |
+| Indicators    | `pandas` rolling mean | 200-day SMA is the only one needed       |
 | Scheduler     | `APScheduler`         | In-process cron, weekly triggers         |
 | Notifications | `python-telegram-bot` | Alerts + reply handling                  |
 | State         | `SQLite` (stdlib)     | Regime state, cash ledger, audit log     |
@@ -101,7 +101,8 @@ execution lag where the backtest has one.
 Callers request ≥365 calendar days so `SMA_200` is converged, not merely present.
 
 ### `indicators.py`
-`SMA_200` is the only column any code reads.
+`SMA_200` is the only column any code reads — a plain pandas rolling mean.
+Using `pandas-ta` for this one call would pull in `numba` and `llvmlite`.
 
 `MIN_BARS_FOR_STRATEGY = 200` — `main.py` refuses to trade a symbol with less,
 rather than silently treating a NaN regime as "stay flat".

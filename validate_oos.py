@@ -2,10 +2,9 @@
 """
 validate_oos.py — Pressure-testing for the regime overlay.
 
-The previous version tested discrete trade P&Ls (permutation on win rate,
-bootstrap CIs). The overlay does not produce independent trades — it produces an
-exposure path — so those tests do not apply. These three do, and they are the
-ones that decided the strategy:
+The overlay produces an exposure path rather than independent trades, so
+trade-level tests (permutation on win rate, bootstrap on trade P&Ls) do not
+apply. These three do, and they are the ones the strategy has to survive:
 
   1. Matched-exposure control — the overlay runs ~71% invested, so the fair null
      is a portfolio held at a CONSTANT 71%, not buy & hold. Cash earns 0%, so

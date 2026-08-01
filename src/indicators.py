@@ -8,6 +8,9 @@ appended.
 Column contract added by this module:
   SMA_200 : float — Simple Moving Average, 200-period (the regime filter)
 
+A plain pandas rolling mean, deliberately: pulling in pandas-ta for this single
+call would drag numba and llvmlite along with it. Values are identical to 1e-13.
+
 Only SMA_200 is computed. The retired signal strategy also produced RSI, EMA_21,
 EMA_50, MACD, VOL_SMA_20, ATR_14, ADX_14, Stochastic and OBV columns; nothing
 read them after the strategy changed, so they were removed rather than
@@ -21,7 +24,6 @@ DataFrame is long enough — see MIN_BARS_FOR_STRATEGY.
 import logging
 
 import pandas as pd
-import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     _validate_input(df)
 
     out = df.copy()
-    out["SMA_200"] = ta.sma(out["close"], length=200)
+    out["SMA_200"] = out["close"].rolling(window=200).mean()
 
     logger.debug(
         "compute_indicators: %d rows, last bar %s — SMA_200=%s",
