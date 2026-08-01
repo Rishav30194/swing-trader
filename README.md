@@ -1,221 +1,101 @@
 # Swing Trader
 
-A personal, automated portfolio application that holds a fixed basket of assets and manages **exposure** rather than trying to pick winners. Each sleeve is invested only while it trades above its own 200-day average; otherwise its capital sits in cash. One Telegram message a week carries the rebalance plan — increases need approval, reductions happen automatically.
+An automated portfolio application that holds a basket of 8 stocks and sells any one of them that falls below its own 200-day average price, holding cash until it recovers. It rebalances once a week and asks for approval over Telegram before buying anything.
 
-> **Current status: Phase 3R — regime overlay implemented, paper trading restarting.** The original signal strategy was retired on 2026-08-01 after testing showed it had no measurable edge.
-
-**This system does not claim to beat the market.** It trades roughly a third of buy-and-hold's return for half its drawdown. See [Honest performance expectations](#honest-performance-expectations).
+**Status: built, tested, and not running.** It is not deployed anywhere and holds no money.
 
 ---
 
-## Why the strategy was replaced
+## Read this before using it
 
-The original three-condition signal gate (close > EMA_50, RSI 40–55, MACD crossover) ran on a VPS for nine weeks and produced **zero trades**. Investigation found three things:
+**Buying these 8 stocks and leaving them alone beat this app, badly.**
 
-1. **Two live defects.** A 90-day lookback returned only 61–63 bars, leaving EMA_50 under-converged and reading up to 1.7% too high; and the 15-minute scan always evaluated the *in-progress* daily bar, so a crossover confirmed at the close could never be acted on.
-2. **One real signal was suppressed by them.** NVDA on 2026-07-08 qualified on completed bars — the live window's inflated EMA_50 rejected it.
-3. **The strategy had no edge regardless.** Permutation test on its trade P&Ls: **p = 0.6144**. Negative CAGR over 8 years. Last place of 9 strategies in *both* train and test halves. Fixing the defects would have produced more trades and larger losses.
+Tested over 2018–2026, starting with $1,000, after taxes:
 
-A search across ~200 configurations — technical rules, cross-sectional momentum, sector rotation, options on real Alpaca option bars, volatility targeting, LLM signals — found nothing that reliably improved risk-adjusted return once survivorship bias was removed. Exposure management reliably reduced drawdown, so that is what the system now does.
+| | your $1,000 becomes |
+|---|---|
+| This app | **~$5,800** |
+| Just buying the stocks and never touching them | **~$10,900** |
 
-Full evidence, including what *failed* and why: [`docs/strategy_validation.md`](docs/strategy_validation.md).
+Year by year, the app won **2 years out of 9** — both of them bad years:
 
----
-
-## Strategy Overview
-
-### Asset Universe
-
-Eight sleeves, equal weight at 1/8 of **allocated capital** each — see [Capital allocation](#capital-allocation).
-
-| Symbol | Type         | Rationale                                          |
-|--------|--------------|-----------------------------------------------------|
-| NVDA   | Single stock | High-volatility, high-liquidity                    |
-| ASML   | Single stock | Semiconductor equipment, lower NVDA correlation    |
-| VOO    | ETF          | S&P 500 tracker                                    |
-| QQQM   | ETF          | Nasdaq-100, tech-heavy moderate volatility         |
-| MSFT   | Single stock | Large-cap tech, strong trend structure             |
-| AAPL   | Single stock | Highest US market liquidity                        |
-| AMD    | Single stock | High-beta semiconductor                            |
-| TSM    | Single stock | Semiconductor, non-US, lower correlation           |
-
-> These symbols were chosen partly *because* they had already performed well. The same strategies scored Sharpe 1.19 here and 0.17 on a universe not selected for past performance. Backtest figures on this universe are not forward expectations.
-
-### The rule — per sleeve, hysteresis band around SMA-200
-
-Evaluated weekly on the most recent **completed** daily bar:
-
-| current state | condition                    | new state |
-|---------------|------------------------------|-----------|
-| held          | close < 0.98 × SMA_200       | exit      |
-| flat          | close > 1.02 × SMA_200       | enter     |
-| either        | anything between those lines | unchanged |
-
-The band is hysteresis, not a threshold — the same price gives a different answer depending on whether the sleeve is currently held. That is what keeps turnover near 5×/yr instead of ~20×/yr when price oscillates around the average.
-
-A sleeve that is off, or that could not be priced, leaves its capital **in cash**. Weight is never redistributed to the remaining sleeves.
-
-### Risk management
-
-The regime band *is* the risk control. No ATR stops, no take-profits, no trailing stops, no day-5 force close — those belonged to the retired strategy. The remaining guardrail is `MAX_POSITION_PCT`, which caps any single sleeve.
-
-### Rebalance cadence
-
-Weekly, after Friday's close. Orders queue to Monday's open, reproducing the one-bar execution lag the strategy was validated under. Weekly scored Sharpe 1.28 against daily's 1.33 at a third of the turnover — which is why there is no intraday scanner.
-
----
-
-## Honest performance expectations
-
-Validated 2018-11 → 2026-07 on the eight-symbol universe:
-
-|                | overlay | buy & hold |
-|----------------|---------|------------|
-| CAGR           | 30.0%   | 39.1%      |
-| Sharpe         | 1.26    | 1.15       |
-| Max drawdown   | **−27.7%** | −50.0%  |
-| MAR            | 1.08    | 0.78       |
-
-**What survived validation:** the drawdown reduction. In a block bootstrap the overlay produced the shallower drawdown in 98.7%–100% of resamples across four different universes, and it beat a *matched-exposure static control* in every window tested.
-
-**What did not:** any risk-adjusted return advantage. In the out-of-sample half the overlay scored Sharpe 1.56 against buy-and-hold's 1.57 and a constant-50%-exposure control's 1.62 — a dead heat. It beat buy-and-hold in **2 of 9 calendar years**, both of them down years.
-
-The backtest window contains no 2000- or 2008-style bear market, so treat the absolute figures as optimistic. If the objective were maximum wealth rather than a tolerable drawdown, buy-and-hold with no application at all would be the honest recommendation.
-
----
-
-## Capital allocation
-
-**Sizing uses the capital you allocate, not your account balance.** Set `TRADING_CAPITAL` and the strategy trades that:
-
-    strategy capital = market value of managed sleeves + the strategy's own cash ledger
-
-A paper account funded with $100,000 still trades the $1,000 you allocated. Without this the app would deploy the whole balance — a 100× over-deployment. Profits compound: once the sleeves are worth $1,100 it sizes off $1,100. Money deposited into the account but never allocated stays invisible to it. Account equity and cash act as ceilings only.
-
-`TRADING_CAPITAL` is **required** — the app refuses to start rather than guess how much money to deploy.
-
-The account is assumed dedicated to this strategy. Positions held outside `SYMBOLS` are never sold and never counted as strategy capital, but each run warns about them. A short position in a managed symbol aborts the run: this strategy is long-only.
-
----
-
-## Costs, fees and tax
-
-**Trading costs are modelled. Tax is not.** The 5 bps/side charged in the backtest covers Alpaca's $0 commission, the SEC fee (~0.00278% on sells), the FINRA TAF, and the bid-ask spread on these liquid names.
-
-**Every rebalance sell is a taxable event in a taxable account.** Buy-and-hold defers tax indefinitely — a structural advantage the pre-tax table above does not show. Over the 2018–2026 backtest on a $100,000 base:
-
-| DRIFT_TOLERANCE | orders | realised gains | short-term | est. tax¹ |
-|---|---|---|---|---|
-| 0.1% | 1,727 | $435,740 | $197,746 | $98,978 |
-| **5% (default)** | **124** | $426,109 | $110,294 | **$82,666** |
-| regime-only | 97 | $269,195 | $9,813 | $42,047 |
-
-¹ at 32% short-term / 15% long-term; your rates differ, state tax is extra.
-
-This is why `DRIFT_TOLERANCE` defaults to 5%: drift trades were 94% of all orders and bought nothing. At 5% the backtest returns a *higher* CAGR and Sharpe with 93% fewer trades.
-
-### After-tax reality — this runs in a taxable account
-
-Both strategies simulated on a $100,000 base, paying tax annually and liquidating at the end:
-
-| strategy | after annual tax | after liquidation | vs buy & hold |
-|---|---|---|---|
-| **overlay (drift 5%)** | $610,462 | **$584,121** | **−46.2%** |
-| buy & hold | $1,260,282 | **$1,086,233** | — |
-
-**Over this window the overlay ends at roughly half of buy-and-hold's after-tax wealth.**
-
-Tax is not the main cause. Ignoring tax entirely the overlay finishes $755,139 against $1,260,282 — already 40% behind. Tax widens −40% to −46%.
-
-What that bought, in 2022 — the window's only real drawdown:
-
-| | 2022 return | max drawdown |
+| year | this app | just holding |
 |---|---|---|
-| overlay | −17.28% | −20.43% |
-| buy & hold | −35.18% | −42.74% |
+| 2018 | −6.6% | −15.0% |
+| 2019 | +43.0% | **+79.7%** |
+| 2020 | +47.2% | **+80.4%** |
+| 2021 | +46.4% | **+52.6%** |
+| 2022 | −22.4% | −41.1% |
+| 2023 | +46.9% | **+90.6%** |
+| 2024 | +43.3% | **+60.3%** |
+| 2025 | +26.0% | **+38.7%** |
+| 2026 | +21.9% | **+28.6%** |
 
-**The trade, plainly: roughly half the terminal wealth to turn a −43% drawdown into −20%.** Worth it only if the deeper drawdown would have made you sell at the bottom — an investor who capitulates in 2022 does far worse than either line. The window contains no 2000- or 2008-style bear, which is precisely where the overlay's case is strongest.
+### The one thing it is good at
 
----
+At the worst moment in those 8 years, $1,000 would have shown:
 
-## Architecture
+- **Just holding:** $500
+- **This app:** $723
 
-```
-┌─────────────────────────────────────────────────────┐
-│              Data Ingestion Layer                   │
-│   Alpaca API — completed daily bars only            │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              Strategy Layer                         │
-│  indicators.py → portfolio.py                       │
-│  SMA_200 → regime state → target weights → orders   │
-│  Pure functions; shared by live AND backtest        │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│         Human-in-the-Loop Gate (Telegram)           │
-│  One weekly plan message → waits for YES/NO         │
-│  INCREASES need YES · REDUCTIONS bypass entirely    │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              Execution Layer                        │
-│  executor.py — Alpaca notional market orders        │
-│  Holdings re-derived from Alpaca every run          │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              State & Scheduler Layer                │
-│  SQLite — sleeves, strategy_state, rebalance_log     │
-│  APScheduler — rebalance Fri 16:15 ET               │
-│              + heartbeat Sat 09:00 ET               │
-└─────────────────────────────────────────────────────┘
-```
+That is the entire trade. It spares you about **$220** of frightening-looking loss and costs you about **$5,000** of gains.
 
-`backtest.py` calls the same `portfolio.py` functions `main.py` calls. The retired strategy failed partly because the live path and the backtest disagreed about which bar to evaluate; sharing the strategy module removes that class of bug.
+That trade only makes sense if a 50% drop would genuinely make you sell everything at the bottom. If you would hold through it, simple investing wins.
 
-### Tech Stack
+### Two caveats that cut both ways
 
-| Component     | Choice                    |
-|---------------|---------------------------|
-| Language      | Python 3.12+              |
-| Broker / Data | Alpaca Markets API        |
-| Indicators    | `pandas-ta`               |
-| Backtesting   | Direct pandas simulation  |
-| Scheduler     | `APScheduler`             |
-| Notifications | `python-telegram-bot`     |
-| State store   | SQLite                    |
-| Deployment    | Ubuntu VPS + systemd      |
+- These 8 stocks were picked partly *because* they had already done well, so the "just holding" column is flattered too.
+- This 8-year window contained only one bad year. In a 2008-style crash the app would look considerably better than it does here.
 
 ---
 
-## Project Structure
+## How it works
 
-```
-swing-trader/
-├── src/
-│   ├── config.py       # Loads .env, exposes typed Settings dataclass
-│   ├── data.py         # Alpaca data fetching; drops the forming bar
-│   ├── indicators.py   # SMA_200 (the only column any code reads)
-│   ├── portfolio.py    # THE STRATEGY — regime, weights, order diffing
-│   ├── database.py     # SQLite — sleeves, strategy_state, rebalance_log
-│   ├── notifier.py     # Telegram plan/result alerts + reply handler
-│   └── executor.py     # Alpaca orders + holdings fetch
-├── tests/              # 249 unit tests
-├── docs/               # Architecture, phases, and strategy validation
-├── scripts/            # Data validation, DB pull/migrate, order smoke-test
-├── main.py             # Entry point — weekly rebalance scheduler
-├── backtest.py         # Regime overlay backtester
-├── validate_oos.py     # Matched-exposure control, train/test, bootstrap
-└── requirements.txt
-```
+**The rule, per stock, checked once a week on the most recent completed daily bar:**
+
+| currently | condition | action |
+|---|---|---|
+| holding it | price drops below 0.98 × its 200-day average | sell it |
+| not holding it | price rises above 1.02 × its 200-day average | buy it |
+| either | price is between those two lines | do nothing |
+
+The two thresholds are deliberately different. If both were exactly the 200-day average, a price hovering around it would trigger a buy and a sell every other week. The gap between them stops that.
+
+**Money:** the 8 stocks get equal shares of whatever you allocate — 1/8 each. A stock that gets sold leaves its share sitting in cash; the money is never piled into the remaining stocks.
+
+**Timing:** it runs after Friday's close. Orders queue and fill at Monday's open.
+
+**Approval:** one Telegram message a week listing every stock, its price, its 200-day average, and what it plans to do. Buying needs you to reply `YES`. **Selling never asks** — protecting you is automatic and happens even if Telegram is down.
+
+### The universe
+
+NVDA, ASML, VOO, QQQM, MSFT, AAPL, AMD, TSM
+
+---
+
+## Capital
+
+`TRADING_CAPITAL` sets how much the app is allowed to invest. It is **required** — the app refuses to start without it.
+
+This is not your account balance. A brokerage account holding $100,000 with `TRADING_CAPITAL=1000` invests $1,000 and ignores the rest. Profits compound: once the holdings are worth $1,100, it works with $1,100.
+
+The account is assumed to be used only by this app. Stocks you bought yourself are never sold and never counted, but the app warns about them each run. A short position stops the run entirely — this app only ever buys.
+
+---
+
+## Costs and tax
+
+Alpaca charges no commission. The regulatory fees on sales are a fraction of a cent. Neither matters.
+
+**Tax does.** In a normal (non-retirement) brokerage account, every sale creates a taxable gain. Buying and holding creates none until you finally sell.
+
+`DRIFT_TOLERANCE` (default 5%) controls how much small-scale rebalancing the app does, and is really a tax setting. At 0.1% it placed 1,727 orders across the backtest; at 5% it places 124 — and returns slightly *more* money. Fewer trades was better on every measure.
+
+In a retirement account (IRA/Roth) none of this applies and rebalancing is free.
 
 ---
 
 ## Setup
-
-### 1. Clone and install dependencies
 
 ```bash
 git clone https://github.com/Rishav30194/swing-trader.git
@@ -225,12 +105,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
-
-Create a `.env` file in the project root (never commit this):
+Create `.env` in the project root (never commit it):
 
 ```env
-# Alpaca — Paper Trading
+# Alpaca — paper trading
 ALPACA_API_KEY=your_paper_key_here
 ALPACA_API_SECRET=your_paper_secret_here
 ALPACA_PAPER=true
@@ -239,94 +117,91 @@ ALPACA_PAPER=true
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 
+# How much the app may invest — REQUIRED, and not your account balance
+TRADING_CAPITAL=1000
+
 # Universe
 SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
 
-# Capital — REQUIRED. Sizing uses THIS, not your account balance.
-TRADING_CAPITAL=1000       # a $100k paper account still trades $1k
-
 # Strategy
-SMA_BAND=0.02              # exit <0.98×SMA200, enter >1.02×
-BARS_LOOKBACK_DAYS=365     # must comfortably exceed 200 trading days
+SMA_BAND=0.02              # sell below 0.98×, buy above 1.02× the 200-day average
+BARS_LOOKBACK_DAYS=365     # needs 200+ trading days of history
 
 # Rebalancing
-DRIFT_TOLERANCE=0.05       # skip drift trades below 5% of capital; a TAX dial
+DRIFT_TOLERANCE=0.05       # skip small rebalancing trades; this is a tax setting
 MIN_ORDER_NOTIONAL=1.0
 REBALANCE_DAY=fri
 REBALANCE_HOUR=16
 REBALANCE_MINUTE=15
-REPLY_TIMEOUT_SECS=14400   # 4h; orders queue to Monday's open anyway
-MAX_POSITION_PCT=0.25
+REPLY_TIMEOUT_SECS=14400   # 4h to reply; orders queue to Monday anyway
+MAX_POSITION_PCT=0.25      # no single stock above 25%
 ```
 
-Get your Alpaca paper trading keys at [alpaca.markets](https://alpaca.markets). Create a Telegram bot via [@BotFather](https://t.me/BotFather).
+Alpaca paper keys: [alpaca.markets](https://alpaca.markets). Telegram bot: [@BotFather](https://t.me/BotFather).
 
-### 3. Validate the data pipeline
+## Running it
 
 ```bash
-python scripts/validate_data.py
+python backtest.py --benchmark    # test the strategy against simply holding
+python validate_oos.py            # stress-test it properly
+python main.py                    # run it live (paper)
+pytest tests/ -q                  # 249 tests
 ```
 
-### 4. Run the backtester
-
-```bash
-python backtest.py --benchmark                       # full history vs buy & hold
-python backtest.py --start 2022-01-01 --end 2022-12-31 --benchmark   # bear market
-python backtest.py --band 0.0 --rebalance 1          # daily, no hysteresis
-```
-
-### 5. Pressure-test the strategy
-
-```bash
-python validate_oos.py
-```
-
-Runs the matched-exposure control, the train/test split, and the block bootstrap on drawdown — the three tests that decided this strategy and rejected the alternatives.
-
-### 6. Run the live paper trading loop
-
-```bash
-python main.py
-```
-
-The scheduler rebalances every Friday at 16:15 ET and sends a heartbeat every Saturday at 09:00 ET.
+`main.py` rebalances every Friday at 16:15 ET and sends a status message every Saturday at 09:00 ET.
 
 ---
 
-## Implementation Phases
+## Architecture
 
-| Phase | Description                        | Status                          |
-|-------|------------------------------------|---------------------------------|
-| 1     | Environment, data pipeline, config | Complete                        |
-| 2     | Indicators, signals, backtesting   | Complete (strategy since retired) |
-| 3     | Paper trading automation           | Complete; observation voided    |
-| 3R    | Strategy replacement — regime overlay | Code complete, deploying     |
-| 4     | Live capital deployment            | Not started                     |
+```
+Alpaca (completed daily bars)
+        ↓
+indicators.py → portfolio.py          the strategy, pure functions
+        ↓
+Telegram approval                     buys need YES · sells never ask
+        ↓
+executor.py                           dollar-amount market orders
+        ↓
+SQLite + APScheduler                  state, audit log, weekly schedule
+```
 
-**Phase gate before live trading:** 26 weekly rebalances, max drawdown < 15%, zero unhandled crashes, live regime transitions matching the backtest on the same bars. Deliberately no Sharpe or win-rate gate — the strategy does not claim an edge, so testing for one would be measuring noise.
+`backtest.py` calls the same `portfolio.py` functions `main.py` calls, so the tested strategy and the live strategy cannot drift apart.
+
+```
+src/
+  config.py       loads .env into typed settings
+  data.py         fetches bars; drops today's unfinished bar
+  indicators.py   the 200-day average
+  portfolio.py    THE STRATEGY — decide, size, generate orders
+  database.py     SQLite: holdings state, cash ledger, audit log
+  notifier.py     Telegram messages and reply handling
+  executor.py     Alpaca orders and account state
+main.py           weekly scheduler
+backtest.py       strategy tester
+validate_oos.py   stress tests
+```
+
+Detail: [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## Risk Guardrails
+## Safety rules
 
-Hard constraints that cannot be bypassed:
+Enforced in code, not by convention:
 
-- Live orders are blocked when `ALPACA_PAPER=true`
-- No order is placed without validated target weights; a sleeve whose regime is off has a target weight of exactly 0
-- **Exposure reductions execute immediately and unconditionally**, including when Telegram is unreachable. Only increases require the weekly YES
-- Target notionals are derived from equity fetched live on every rebalance
-- One sleeve per symbol, each capped at `MAX_POSITION_PCT`
-- A failed order is logged, alerted, and never assumed to have succeeded — holdings are re-derived from Alpaca on the next run
+- No live orders while `ALPACA_PAPER=true`
+- No order without validated targets; a stock marked "sell" gets a target of exactly zero
+- **Sells run immediately and unconditionally**, including when Telegram is unreachable. Only buys wait for approval
+- Position sizes come from allocated capital fetched fresh every run, never a cached or hardcoded figure
+- One position per stock, each capped at `MAX_POSITION_PCT`
+- A failed order is logged, alerted, and never assumed to have worked — holdings are re-read from Alpaca every run
 
----
+## Going live
 
-## Paper → Live Switch
+Set `ALPACA_PAPER=false`, swap in live API keys, restart. No code changes.
 
-1. Set `ALPACA_PAPER=false` in `.env`
-2. Replace API keys with live Alpaca credentials
-3. Restart the service
-
-Zero code changes by design. All orders are notional, so fractional shares are automatic — on a $1,000 account each sleeve targets $125, and ASML at ~$1,600/share resolves to ~0.08 shares.
+Orders are dollar-amount, so fractional shares are automatic — on $1,000 each stock gets $125, and ASML at ~$1,600/share resolves to about 0.08 shares.
 
 ---
 

@@ -2,9 +2,8 @@
 test_data.py — Unit tests for src/data.py.
 
 The bar-selection logic decides which close the strategy trades on, so it is
-money-critical. The previous strategy's worst defect lived here: it always
-evaluated the still-forming intraday bar, so a signal confirmed at the close
-could never be acted upon.
+money-critical: evaluating a still-forming intraday bar means deciding against
+a close that has not happened yet.
 
 No network calls — the Alpaca client is never touched.
 """

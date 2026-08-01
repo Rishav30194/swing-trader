@@ -59,7 +59,7 @@ class Settings:
     alpaca_api_secret: str
 
     # True  → connect to Alpaca's paper trading sandbox (fake money)
-    # False → connect to the live endpoint (real money — Phase 4 only)
+    # False → connect to the live endpoint (real money)
     alpaca_paper: bool
 
     # --- Telegram ---
@@ -156,8 +156,8 @@ def _load_settings() -> Settings:
         symbols=symbols,
 
         # Strategy thresholds — all have sensible defaults matching the
-        # validated configuration in docs/strategy_validation.md, but can be
-        # overridden in .env without touching this file.
+        # validated configuration, but can be overridden in .env without
+        # touching this file.
         sma_band=float(_get("SMA_BAND", "0.02")),
         bars_lookback_days=int(_get("BARS_LOOKBACK_DAYS", "365")),
 

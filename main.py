@@ -9,8 +9,8 @@ Why after the close, and why weekly:
   The strategy reads completed daily bars and was validated executing at the
   NEXT session's open. Running after Friday's close and letting Alpaca queue
   market orders to Monday's open reproduces that exactly. Weekly rebalancing
-  scored Sharpe 1.28 against daily's 1.33 at a third of the turnover, which is
-  why there is no intraday scanner. See docs/strategy_validation.md.
+  captures almost all of daily's benefit at a third of the turnover, which is
+  why there is no intraday scanner.
 
 Hard rules enforced here (from CLAUDE.md):
   - Target weights computed and validated before any order (rule 2)

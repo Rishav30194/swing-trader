@@ -78,7 +78,7 @@ def get_historical_bars(
         days: Calendar days of history. The strategy needs 200 completed bars
             for SMA_200, so callers should request ~365 or more — a shorter
             window leaves slow indicators under-converged rather than absent,
-            which is the silent-failure mode that broke the previous strategy.
+            which fails silently rather than loudly.
         completed_only: Drop the final bar when it is today's still-forming
             session. During market hours Alpaca returns a partial bar for the
             current day; evaluating it means acting on an incomplete close and
@@ -91,9 +91,9 @@ def get_historical_bars(
         Exception   — any Alpaca API or network error is logged then re-raised.
 
     Why split-adjusted prices?
-        Comparing a pre-split bar to a post-split bar would make RSI, EMA,
-        and MACD calculations meaningless. Adjustment.ALL corrects for both
-        splits and dividends so the price series is continuous.
+        Comparing a pre-split bar to a post-split bar would make the 200-day
+        average meaningless. Adjustment.ALL corrects for both splits and
+        dividends so the price series is continuous.
     """
     # Compute the start date in UTC. Alpaca ignores weekends/holidays
     # automatically — requesting a Saturday start just moves to Monday.
@@ -160,8 +160,7 @@ def _drop_forming_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
     After the close that same bar is complete and must be KEPT. Dropping it would
     make the weekly rebalance decide on the previous day's close, giving live a
-    two-bar execution lag where the backtest has one — the live/backtest
-    divergence that hid the previous strategy's defect.
+    two-bar execution lag where the backtest has one.
 
     The 16:00 ET cutoff is deliberately not holiday- or early-close-aware: on an
     early-close day the bar is complete sooner, so keeping it after 16:00 is

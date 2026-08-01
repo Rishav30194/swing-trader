@@ -1,361 +1,276 @@
-# Architecture — Swing Trader
+# Architecture
 
-## Technology Stack
+Technical reference. For what the app does and whether you should use it, see the [README](../README.md).
 
-| Component        | Choice              | Notes                                          |
-|------------------|---------------------|------------------------------------------------|
-| Language         | Python 3.12+        | Ecosystem fit for quant work                   |
-| Broker / Data    | Alpaca Markets API  | Free paper trading, same SDK for live          |
-| SDK              | `alpaca-py`         | Official Alpaca Python SDK                     |
-| Data wrangling   | `pandas`            | OHLCV frame manipulation                       |
-| Indicators       | `pandas-ta`         | SMA_200 only — no C compilation needed         |
-| Scheduler        | `APScheduler`       | In-process cron, weekly triggers               |
-| Notifications    | `python-telegram-bot` | Push alerts + reply handling                 |
-| State store      | `SQLite` (stdlib)   | Regime state, rebalance log, event log         |
-| Config           | `python-dotenv`     | Secrets from `.env`, never hardcoded           |
-| Backtesting      | Direct pandas sim   | Calls `portfolio.py`; avoids divergence        |
-| Deployment       | Ubuntu VPS + systemd | Hetzner CPX11 (~$7.59/mo)                     |
+## Stack
+
+| Component     | Choice                | Notes                                    |
+|---------------|-----------------------|------------------------------------------|
+| Language      | Python 3.12+          |                                          |
+| Broker / data | Alpaca Markets API    | Same SDK for paper and live              |
+| SDK           | `alpaca-py`           |                                          |
+| Data          | `pandas`              | OHLCV frames                             |
+| Indicators    | `pandas-ta`           | 200-day SMA only                         |
+| Scheduler     | `APScheduler`         | In-process cron, weekly triggers         |
+| Notifications | `python-telegram-bot` | Alerts + reply handling                  |
+| State         | `SQLite` (stdlib)     | Regime state, cash ledger, audit log     |
+| Config        | `python-dotenv`       | Secrets from `.env`, never hardcoded     |
+| Backtesting   | Direct pandas sim     | Calls `portfolio.py`; avoids divergence  |
 
 ---
 
-## System Layers
+## Layers
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              Data Ingestion Layer                   │
-│   Alpaca API — completed daily bars only            │
-│   (today's forming bar is dropped before use)       │
+│  Data                                               │
+│  Alpaca — completed daily bars only                 │
+│  (today's forming bar is dropped before use)        │
 └────────────────────┬────────────────────────────────┘
-                     │
 ┌────────────────────▼────────────────────────────────┐
-│              Strategy Layer                         │
+│  Strategy                                           │
 │  indicators.py → portfolio.py                       │
 │  SMA_200 → regime state → target weights → orders   │
 │  Pure functions; shared by live AND backtest        │
 └────────────────────┬────────────────────────────────┘
-                     │
 ┌────────────────────▼────────────────────────────────┐
-│         Human-in-the-Loop Gate (Telegram)           │
-│  One weekly plan message → waits for YES/NO         │
-│  INCREASES need YES · REDUCTIONS bypass entirely    │
+│  Human gate (Telegram)                              │
+│  One weekly plan → waits for YES/NO                 │
+│  BUYS need YES · SELLS bypass entirely              │
 └────────────────────┬────────────────────────────────┘
-                     │
 ┌────────────────────▼────────────────────────────────┐
-│              Execution Layer                        │
-│  executor.py — Alpaca notional market orders        │
+│  Execution                                          │
+│  executor.py — notional market orders               │
 │  Holdings re-derived from Alpaca every run          │
-│  Paper ↔ Live switched via ALPACA_PAPER only        │
 └────────────────────┬────────────────────────────────┘
-                     │
 ┌────────────────────▼────────────────────────────────┐
-│              State & Scheduler Layer                │
-│  SQLite — sleeves, strategy_state, rebalance_log     │
+│  State & scheduling                                 │
+│  SQLite — sleeves, strategy_state, rebalance_log    │
 │  APScheduler — rebalance Fri 16:15 ET               │
-│              + heartbeat Sat 09:00 ET               │
+│                heartbeat Sat 09:00 ET               │
 └─────────────────────────────────────────────────────┘
 ```
 
-**Why the strategy layer is shared.** The retired strategy failed partly because
-the live path evaluated a different bar than the backtest did, and nothing
-caught it. `backtest.py` now calls the same `portfolio.py` functions `main.py`
-calls, so that class of divergence cannot recur.
+**Why the strategy layer is shared.** `backtest.py` calls the same `portfolio.py`
+functions `main.py` calls. A backtest that passes therefore validates the
+production code rather than a parallel reimplementation of it.
 
 ---
 
-## Project File Structure
+## Files
 
 ```
 swing-trader/
-├── docs/
-│   ├── project_overview.md
-│   ├── architecture.md
-│   ├── implementation_phases.md
-│   └── strategy_validation.md   # Evidence behind the strategy + its limits
-│
+├── docs/architecture.md
 ├── src/
-│   ├── __init__.py
-│   ├── config.py           # Loads .env, exposes typed settings
-│   ├── data.py             # Alpaca data fetching; drops the forming bar
-│   ├── indicators.py       # SMA_200 (the only column any code reads)
-│   ├── portfolio.py        # THE STRATEGY — regime, weights, orders
-│   ├── database.py         # SQLite — sleeves, strategy_state, rebalance_log
-│   ├── notifier.py         # Telegram plan/result alerts + reply handler
-│   └── executor.py         # Alpaca order placement + holdings fetch
-│
-├── tests/
-│   ├── test_indicators.py  # Indicator math
-│   ├── test_portfolio.py   # Strategy: regime band, weights, order diffing
-│   ├── test_main.py        # Rebalance orchestration and failure modes
-│   ├── test_data.py        # Bar selection and the forming-bar boundary
-│   ├── test_database.py    # SQLite state store (in-memory)
-│   ├── test_notifier.py    # Telegram formatting + send/listen (mocked)
-│   └── test_executor.py    # Alpaca order placement (mocked TradingClient)
-│
+│   ├── config.py       # .env → typed frozen Settings
+│   ├── data.py         # Alpaca bars; drops today's forming bar
+│   ├── indicators.py   # SMA_200
+│   ├── portfolio.py    # THE STRATEGY — regime, weights, orders
+│   ├── database.py     # SQLite: sleeves, strategy_state, rebalance_log
+│   ├── notifier.py     # Telegram plan/result + reply handling
+│   └── executor.py     # Alpaca orders, holdings, account state
+├── tests/              # 249 tests
 ├── scripts/
-│   ├── validate_data.py        # Data validation script
-│   ├── pull_db.sh              # Pull trades.db snapshot from VPS
-│   ├── migrate_db.py           # shares INTEGER → REAL (historical)
-│   └── test_notional_order.py  # Integration smoke-test for notional orders
-│
-├── logs/                   # Runtime logs (gitignored)
-├── trades.db               # Local DB snapshot pulled from VPS (gitignored)
-├── main.py                 # Entry point — weekly rebalance scheduler
-├── backtest.py             # Regime overlay backtester
-├── validate_oos.py         # Matched-exposure control, train/test, bootstrap
-├── .env                    # Secrets — NEVER commit (gitignored)
-├── .gitignore
+│   ├── validate_data.py
+│   └── test_notional_order.py
+├── main.py             # weekly rebalance scheduler
+├── backtest.py         # strategy tester
+├── validate_oos.py     # matched-exposure control, train/test, bootstrap
 └── requirements.txt
 ```
 
 ---
 
-## Module Responsibilities
+## Modules
 
 ### `config.py`
-- Loads all environment variables via `python-dotenv`
-- Exposes a single frozen `Settings` dataclass used everywhere
-- Fails loudly at startup if any required env var is missing
-- Single source of truth for API keys, symbols, and strategy parameters
+Loads `.env`, exposes one frozen `Settings`. Fails loudly at startup if a
+required variable is missing. `TRADING_CAPITAL` is required — the app must
+refuse to start rather than guess how much money to deploy.
 
 ### `data.py`
-- Fetches historical daily OHLCV bars from Alpaca
-- `completed_only=True` drops today's still-forming bar. Alpaca includes the
-  current session as a bar from the opening bell; evaluating it means deciding
-  against a close that has not happened yet
-- Returns a clean `pd.DataFrame` with standardised column names
-- Callers request ≥365 calendar days so SMA_200 is converged, not merely present
+Fetches daily OHLCV from Alpaca.
+
+`completed_only=True` drops today's bar **while the session is still open**.
+Alpaca includes the current session as a bar from the opening bell, so acting on
+it means deciding against a close that has not happened. After 16:00 ET that
+same bar is final and is kept — dropping it there would give live a two-bar
+execution lag where the backtest has one.
+
+Callers request ≥365 calendar days so `SMA_200` is converged, not merely present.
 
 ### `indicators.py`
-- Pure functions: DataFrame in, same DataFrame with `SMA_200` appended
-- `SMA_200` is the only column any code reads. The retired strategy's RSI, EMA,
-  MACD, ATR, ADX, Stochastic and OBV columns were removed rather than
-  recalculated weekly for every symbol; git history has them
-- `MIN_BARS_FOR_STRATEGY = 200` — `main.py` refuses to trade a symbol with less,
-  rather than silently treating a NaN regime as "stay flat"
+`SMA_200` is the only column any code reads.
+
+`MIN_BARS_FOR_STRATEGY = 200` — `main.py` refuses to trade a symbol with less,
+rather than silently treating a NaN regime as "stay flat".
 
 ### `portfolio.py` — the entire strategy
-Pure, no I/O, no config import. Every threshold is an explicit argument so the
+Pure: no I/O, no config import. Every threshold is an explicit argument, so the
 same code runs in the backtest and in production.
 
 - `compute_regime_state(df, band, currently_held)` → `RegimeState(on, context)`.
-  Hysteresis around SMA_200. A NaN SMA holds the current state rather than
-  churning the sleeve
+  Hysteresis around `SMA_200`. A NaN SMA holds the current state rather than
+  churning the sleeve.
 - `compute_target_weights(states, universe_size, max_position_pct)` → weights.
   Equal weight is 1/`universe_size` — the **configured** count, not the number of
   evaluated sleeves. A symbol that could not be priced leaves its weight in cash
-- `validate_target_weights(...)` — asserts hard rules 2 and 5 before any order
-- `diff_to_orders(current, target, equity, ...)` → `list[RebalanceOrder]`,
-  sells first so proceeds fund the buys
+  instead of handing it to the survivors.
+- `validate_target_weights(...)` — asserts the hard rules before any order.
+- `diff_to_orders(current, target, equity, ...)` → `list[RebalanceOrder]`, sells
+  first so proceeds fund the buys. `drift_tolerance` gates **drift only** —
+  regime entries and exits are decisions, not sizing adjustments, and must never
+  be suppressed by a threshold.
 
 ### `database.py`
-- Initialises SQLite schema on first run via `init_db(path)`
-- `get_regime_states` / `set_regime_state` — the only state the strategy cannot
-  re-derive from Alpaca, since hysteresis needs last week's decision
-- `log_rebalance_order` — audit row per order (planned/filled/failed/skipped)
-- `log_event` — structured events for audit
+- `get_regime_states` / `set_regime_state` — the only state not derivable from
+  Alpaca, since hysteresis needs last week's decision
+- `get_strategy_cash` / `set_strategy_cash` — the strategy's own cash ledger, so
+  a $100k account can trade the $1k allocated to it
+- `log_rebalance_order` — one audit row per order attempt and outcome
 - `get_weekly_summary(conn, since)` — read-only aggregator for the heartbeat
-- `get_strategy_cash` / `set_strategy_cash` — the strategy's own cash ledger,
-  so a $100k account can trade the $1k allocated to it
 
 ### `notifier.py`
-- `send_rebalance_plan` — the weekly message: every sleeve's close, SMA_200 and
-  gap, plus the resulting orders. Enough to decide without opening a laptop
-- `send_rebalance_result` — what actually filled, failed, or was skipped
+- `send_rebalance_plan` — the weekly message: every sleeve's close, `SMA_200`,
+  the gap, and the resulting orders. Enough to decide without a laptop
+- `send_rebalance_result` — what filled, failed, or was skipped
 - `send_weekly_summary` — Saturday heartbeat
-- Every send returns `bool` and never raises. Hard rule 3 requires reductions to
-  execute even when Telegram is unreachable, so no caller may be forced into an
-  exception path by a failed send
-- Telegram's async API wrapped with `asyncio.run()`
+- Every send returns `bool` and never raises. Sells must execute even when
+  Telegram is unreachable, so no caller may be forced into an exception path
 
 ### `executor.py`
-- `get_current_holdings()` — Alpaca is the source of truth for what is held, never
-  the local database (hard rule 7). A partially-applied rebalance, a manual
-  trade, or a crash mid-run all self-correct on the next cycle
-- `place_buy_order(symbol, notional)` / `place_sell_notional(...)` — dollar-amount
-  market orders, fractional shares supported
-- `place_sell_order(symbol, shares, reason)` — full sleeve exits, exact share
-  count so no fractional dust is left behind
-- Reads `ALPACA_PAPER` on every order call; raises if it changed since startup
-- Polls until filled so callers receive the actual fill price
+- `get_current_holdings()` — Alpaca is the source of truth for what is held,
+  never the local database. A partially-applied rebalance, a manual trade, or a
+  crash mid-run all self-correct on the next cycle
+- `get_account_equity()` / `get_account_cash()` — ceilings on the strategy ledger
+- `place_buy_order` / `place_sell_notional` — dollar-amount orders, fractional
+  shares supported
+- `place_sell_order` — full exits by exact share count, so no fractional dust
+- Re-reads `ALPACA_PAPER` on every order; raises if it changed since startup
+- Polls until filled so callers see the real fill price
 
 ### `main.py`
-- APScheduler with two weekly jobs:
-  - **Rebalance** — Fri 16:15 ET. Orders queue to Monday's open, reproducing the
-    one-bar execution lag the strategy was validated under
-  - **Heartbeat** — Sat 09:00 ET, unconditional, so a crashed rebalance is still
-    visible
-- Orchestrates: holdings → regimes → weights → validate → plan → [gate] →
-  execute → log → report
-- A symbol that fails to evaluate is omitted entirely: no target weight, no
-  order, sleeve untouched. Never liquidated on missing data
+Two weekly jobs:
+- **Rebalance** — Fri 16:15 ET. Orders queue to Monday's open, reproducing the
+  one-bar lag the strategy was validated under
+- **Heartbeat** — Sat 09:00 ET, unconditional, so a crashed rebalance is visible
+
+Flow: holdings → regimes → weights → validate → plan → [gate] → execute → log →
+report.
+
+A symbol that fails to evaluate is omitted entirely: no target weight, no order,
+sleeve untouched. Never liquidated on missing data. Both jobs are wrapped so no
+unhandled exception can die silently inside the scheduler.
 
 ---
 
-## Database Schema (SQLite)
+## Database schema
 
-### `sleeves` table
 ```sql
+-- Regime flag per symbol. Hysteresis needs last week's state, and this is the
+-- only thing not derivable from Alpaca. Share counts live in Alpaca, not here.
 CREATE TABLE sleeves (
     symbol       TEXT PRIMARY KEY,
-    regime_on    INTEGER NOT NULL DEFAULT 0,   -- hysteresis needs last week's state
+    regime_on    INTEGER NOT NULL DEFAULT 0,
     last_close   REAL,
     last_sma_200 REAL,
     updated_at   TEXT NOT NULL
 );
-```
-Share counts deliberately live in Alpaca, not here (hard rule 7).
 
-### `rebalance_log` table
-```sql
+-- The strategy's own cash ledger, so a $100k account can trade $1k.
+-- strategy equity = managed sleeve value + this cash.
+CREATE TABLE strategy_state (
+    key        TEXT PRIMARY KEY,     -- 'strategy_cash'
+    value      REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- One row per order attempt.
 CREATE TABLE rebalance_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     symbol    TEXT NOT NULL,
-    side      TEXT NOT NULL,          -- buy | sell
+    side      TEXT NOT NULL,   -- buy | sell
     notional  REAL NOT NULL,
-    reason    TEXT NOT NULL,          -- regime_entry | regime_exit | drift
-    status    TEXT NOT NULL,          -- planned | filled | failed | skipped
+    reason    TEXT NOT NULL,   -- regime_entry | regime_exit | drift
+    status    TEXT NOT NULL,   -- filled | partial | failed | skipped
     order_id  TEXT,
-    detail    TEXT                    -- JSON: Alpaca response or failure reason
+    detail    TEXT             -- JSON: Alpaca response or failure reason
 );
-```
 
-### `trade_log` table
-```sql
+-- Whole-plan events.
 CREATE TABLE trade_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
-    symbol    TEXT NOT NULL,          -- 'PORTFOLIO' for whole-plan events
-    event     TEXT NOT NULL,          -- plan | error
-    detail    TEXT                    -- JSON blob with full context
+    symbol    TEXT NOT NULL,   -- 'PORTFOLIO' for plan-level events
+    event     TEXT NOT NULL,   -- plan | error
+    detail    TEXT             -- JSON
 );
 ```
 
-### `positions` table (legacy)
-No longer created. Databases that already have one keep it untouched — nothing
-drops it — but the current code neither reads nor writes it.
+---
+
+## Capital model
+
+Sizing uses the **strategy's** capital, never the account balance:
+
+```
+strategy equity = market value of managed sleeves + strategy cash ledger
+```
+
+seeded from `TRADING_CAPITAL`. Profits compound; money deposited into the
+account but never allocated stays invisible. Account equity and cash are
+ceilings only — if the ledger ever claims more than the account holds, the
+account wins.
+
+The ledger moves only on actual fills, so skipped and failed orders cannot drift
+it away from reality.
+
+**Account dedication is assumed.** Positions outside `SYMBOLS` are never sold and
+never counted as strategy capital, but each run warns about them. A short
+position in a managed symbol aborts the run — this strategy is long-only, and a
+negative holding would invert the order arithmetic.
 
 ---
 
-## Environment Variables (.env)
+## Operational notes
 
-```
-# Alpaca — Paper Trading
-ALPACA_API_KEY=your_paper_key_here
-ALPACA_API_SECRET=your_paper_secret_here
-ALPACA_PAPER=true                          # flip to false for Phase 4
+**Order timing.** The rebalance runs after Friday's close, so market orders queue
+to Monday's open. That is deliberate: it reproduces the execution lag the
+strategy was tested under.
 
-# Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
+**Cash vs margin accounts.** When every sleeve is on, the plan deploys 100% of
+allocated capital, and a rebalance that sells one sleeve to fund another does
+both in the same run. On a margin account (including Alpaca paper) proceeds are
+available immediately. On a **cash** account, sale proceeds settle T+1, so a
+same-run buy funded by that morning's sale can be rejected for unsettled funds.
+The failure is safe — logged, alerted, and retried on the next weekly run.
 
-# Universe
-SYMBOLS=NVDA,ASML,VOO,QQQM,MSFT,AAPL,AMD,TSM
-
-# Capital — REQUIRED. Sizing uses THIS, not the account balance.
-TRADING_CAPITAL=1000       # a $100k paper account still trades $1k
-
-# Strategy
-SMA_BAND=0.02              # hysteresis: exit <0.98×SMA200, enter >1.02×
-BARS_LOOKBACK_DAYS=365     # must comfortably exceed 200 trading days
-
-# Rebalancing
-DRIFT_TOLERANCE=0.05       # skip drift trades below 5% of capital; a TAX dial
-MIN_ORDER_NOTIONAL=1.0     # Alpaca rejects notional orders below $1
-REBALANCE_DAY=fri
-REBALANCE_HOUR=16
-REBALANCE_MINUTE=15
-REPLY_TIMEOUT_SECS=14400   # 4h to reply; orders queue to Monday's open anyway
-MAX_POSITION_PCT=0.25      # cap per sleeve
-```
-
-> Variables from the retired strategy (`RSI_LOWER_BOUND`, `ATR_STOP_MULTIPLIER`,
-> `RISK_PER_TRADE_PCT`, `MAX_OPEN_POSITIONS`, …) are no longer read. Leaving them
-> in `.env` is harmless.
-
----
-
-## VPS Operations
-
-**Server:** Hetzner CPX11 — Hillsboro, OR — `5.78.207.143` — Ubuntu 24.04
-**User:** `trader` | **Service:** `swing-trader.service` (systemd, auto-starts on reboot)
-
-### Common commands (run from your Mac)
-
-```bash
-# Stream live logs
-ssh trader@5.78.207.143 "journalctl -u swing-trader -f"
-
-# Check service status
-ssh trader@5.78.207.143 "systemctl status swing-trader"
-
-# Restart the service (e.g. after a config change)
-ssh trader@5.78.207.143 "sudo systemctl restart swing-trader"
-
-# Pull a fresh DB snapshot for review in DB Browser
-bash scripts/pull_db.sh
-```
-
-### Updating the code on the VPS
-
-Changes are NOT automatically deployed — push to GitHub, then manually update:
-
-```bash
-ssh trader@5.78.207.143 "cd ~/swing-trader && git pull && sudo systemctl restart swing-trader"
-```
-
-> `sqlite3` is **not** installed on the VPS — query via `python3.12` instead.
-
-### Reviewing the database locally
-
-```bash
-bash scripts/pull_db.sh
-```
-
-Then open `trades.db` in DB Browser for SQLite and hit **File → Revert**.
-Useful queries:
+**Reviewing the database.** `sqlite3` may not be installed on a server; query via
+`python3.12` instead.
 
 ```sql
--- Which sleeves are currently invested
+-- which sleeves are currently invested
 SELECT symbol, regime_on, last_close, last_sma_200 FROM sleeves ORDER BY symbol;
 
--- Rebalance history, most recent first
-SELECT * FROM rebalance_log ORDER BY timestamp DESC LIMIT 100;
+-- how much capital the strategy thinks it has uninvested
+SELECT value FROM strategy_state WHERE key = 'strategy_cash';
 
--- Anything that failed
-SELECT * FROM rebalance_log WHERE status = 'failed' ORDER BY timestamp DESC;
+-- anything that failed
+SELECT * FROM rebalance_log WHERE status IN ('failed','partial')
+ORDER BY timestamp DESC;
 ```
 
 ---
 
-## Paper → Live Switch Protocol
+## Paper → live
 
-The only change required to go from paper to live:
+1. `ALPACA_PAPER=false` in `.env`
+2. Replace the API keys with live credentials
+3. Restart
 
-1. Set `ALPACA_PAPER=false` in `.env`
-2. Replace `ALPACA_API_KEY` and `ALPACA_API_SECRET` with live credentials
-3. Restart the service
+Zero code changes, enforced by design in `config.py` and `executor.py`.
 
-Zero code changes. Enforced by design in `config.py` and `executor.py`.
-
-**Note on small accounts.** All orders are notional (dollar-amount), so
-fractional shares are automatic. With 8 equal sleeves on a $1,000 account each
-target is $125 — ASML at ~$1,600/share resolves to ~0.08 shares, which is fine.
-The earlier plan to drop ASML for Phase 4 is no longer needed: it was a
-consequence of whole-share sizing under the retired strategy.
-
-**Note on cash vs margin accounts.** When every sleeve is on, the plan deploys
-100% of equity, and a rebalance that sells one sleeve to fund another does both
-in the same run. On a **margin** account (including Alpaca paper, which carries a
-4× multiplier) proceeds are available immediately and this is fine. On a **cash**
-account, sale proceeds settle T+1, so a same-run buy funded by that morning's
-sale can be rejected for unsettled funds. The failure is safe — the order is
-logged, alerted, and the next weekly run re-derives holdings from Alpaca and
-retries — but expect it if you go live on a cash account.
-
-**Account dedication is assumed.** Sleeve targets are sized off *total* account
-equity. Any position held outside `SYMBOLS` inflates every target. The
-rebalancer never sells what it does not manage, and warns on each run if it
-finds such a position, but the account should hold only the configured symbols.
-Short positions in managed symbols abort the run outright — the strategy is
-long-only and a negative holding would invert the order arithmetic.
+All orders are notional, so fractional shares are automatic. On $1,000 each
+sleeve targets $125, and ASML at ~$1,600/share resolves to ~0.08 shares.

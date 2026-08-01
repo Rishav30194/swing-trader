@@ -5,10 +5,8 @@ backtest.py — Regime-overlay backtester.
 Fetches historical OHLCV data from Alpaca and simulates the strategy by calling
 the SAME functions main.py calls: compute_regime_state, compute_target_weights,
 diff_to_orders. Nothing about the strategy is reimplemented here, so a passing
-backtest validates the production code rather than a parallel copy of it. The
-previous strategy failed partly because the live path and the backtest path
-disagreed about which bar to evaluate; sharing portfolio.py removes that class
-of bug entirely.
+backtest validates the production code rather than a parallel copy of it, and
+the tested strategy cannot drift away from the live one.
 
 Execution convention (matches live):
   Regime is evaluated on a completed daily close; orders fill at the NEXT
@@ -327,7 +325,7 @@ def print_report(
         print()
         print("  Expected shape: lower CAGR, materially shallower drawdown.")
         print("  This strategy is a drawdown-control device, not an alpha source —")
-        print("  see docs/strategy_validation.md before reading anything else into it.")
+        print("  It reduces drawdown and gives up return to do it — see the README.")
     print("=" * W + "\n")
 
 

@@ -209,7 +209,7 @@ def main() -> None:
     print("  control — not buy & hold — on drawdown and MAR, in BOTH halves.")
     print("  Expect no Sharpe advantage in the test half; that is a known limit,")
     print("  not a regression. A bootstrap figure near 50% would mean the drawdown")
-    print("  reduction is noise. See docs/strategy_validation.md.\n")
+    print("  reduction is noise.\n")
 
 
 if __name__ == "__main__":

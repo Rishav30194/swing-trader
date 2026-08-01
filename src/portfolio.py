@@ -3,17 +3,16 @@ portfolio.py — Regime state, target weights, and rebalance order generation.
 
 This module holds the entire strategy. It is pure: no I/O, no API calls, no
 config import. Every threshold is an explicit keyword argument so the same
-functions run in the backtest and in production without divergence — the class
-of bug that broke the previous strategy.
+functions run in the backtest and in production, and cannot drift apart.
 
 Three stages, in order:
 
   compute_regime_state(df, band, currently_held)
       → RegimeState(on, context)      per symbol, from its own 200-day SMA
 
-  compute_target_weights(states, max_position_pct)
-      → dict[symbol, weight]          equal weight across ALL symbols; a sleeve
-                                      whose regime is off gets exactly 0
+  compute_target_weights(states, universe_size, max_position_pct)
+      → dict[symbol, weight]          equal weight across the CONFIGURED
+                                      universe; a sleeve that is off gets 0
 
   diff_to_orders(current_notional, target_weights, equity, ...)
       → list[RebalanceOrder]          sells first, then buys
@@ -21,7 +20,7 @@ Three stages, in order:
 The band is hysteresis, not a threshold: a held sleeve exits only below
 (1 − band) × SMA_200 and a flat sleeve enters only above (1 + band) × SMA_200.
 Between those lines the current state persists. This is what keeps turnover at
-~7×/yr instead of ~20×/yr when price oscillates around the average.
+~5×/yr instead of ~20×/yr when price oscillates around the average.
 """
 
 import logging
@@ -219,7 +218,7 @@ def diff_to_orders(
             (Gating regime transitions on it silently stopped all trading once
             the tolerance exceeded 1/N.) Raising this cuts the number of taxable
             events sharply, which matters far more than the drift it leaves
-            uncorrected: see docs/strategy_validation.md.
+            uncorrected.
 
     Returns:
         Orders sorted sells-first so proceeds are available before buys run.
