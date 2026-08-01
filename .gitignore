@@ -12,3 +12,6 @@ trades.db
 
 # macOS
 .DS_Store
+
+# Claude Code local settings — machine-specific, never shared
+.claude/
