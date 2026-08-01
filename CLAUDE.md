@@ -34,9 +34,15 @@ primarily a **tax dial**: at 0.1% drift trades were 94% of all orders and
 realised capital gains for no measurable benefit. Regime entries and exits
 ignore it entirely — they are decisions, not sizing adjustments.
 
+**This runs in a general TAXABLE account**, not an IRA/Roth. Every sell realises
+a gain. Any proposal that increases turnover must be argued on after-tax terms.
+Measured over 2018–2026 the overlay ends ~46% below buy-and-hold after tax; its
+entire justification is that it turned 2022's −43% drawdown into −20%. Do not
+add trading activity without a drawdown-control reason.
+
 **What this strategy is and is not.** It is a drawdown-control device. Validated
-2018-11→2026-07 it cut maximum drawdown from −50.0% to −25.6% while reducing CAGR
-from 41.1% to 28.9%, and beat a constant-exposure control at matched average
+2018-11→2026-07 it cut maximum drawdown from −50.0% to −27.7% while reducing CAGR
+from 39.1% to 30.0%, and beat a constant-exposure control at matched average
 exposure on drawdown and MAR in every window tested. It showed **no** out-of-sample
 Sharpe advantage (test half: 1.56 vs 1.57 buy-and-hold) and it beat buy-and-hold in
 only 2 of 9 calendar years. Do not describe it as an alpha strategy, and do not

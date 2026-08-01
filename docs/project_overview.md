@@ -98,12 +98,19 @@ The regime band *is* the risk control. There are no ATR stops, no take-profit
 levels, and no trailing stops — those belonged to the retired strategy. The
 remaining guardrail is `MAX_POSITION_PCT`, which caps any single sleeve.
 
-### Taxes
+### Taxes — this is a general taxable account
 
-Every rebalance sell realises a capital gain in a taxable account; buy-and-hold
-defers indefinitely. `DRIFT_TOLERANCE` (default 5%) is the dial that controls
-this — it cut orders from 1,727 to 124 across the backtest while *improving*
-CAGR and Sharpe. In a tax-advantaged account the issue disappears entirely.
+Confirmed 2026-08-01: not an IRA or Roth. Every rebalance sell realises a
+capital gain; buy-and-hold defers indefinitely.
+
+`DRIFT_TOLERANCE` (default 5%) is the dial — it cut orders from 1,727 to 124
+across the backtest while *improving* CAGR and Sharpe.
+
+**After tax, over 2018–2026, the overlay ends ~46% below buy-and-hold**
+($584,121 vs $1,086,233 on a $100k base). Tax is not the main cause: ignoring it
+entirely the overlay is already 40% behind. What it bought was 2022 —
+−17.3% instead of −35.2%, a −20% drawdown instead of −43%. See
+`docs/strategy_validation.md`.
 
 ### Rebalance cadence
 

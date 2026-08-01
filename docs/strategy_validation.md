@@ -51,35 +51,37 @@ sector ETFs. Any result measured only on the original universe is untrustworthy.
 
 Per-symbol hysteresis band around the 200-day SMA; equal weight; weekly rebalance.
 
-**Matched-exposure control** — the overlay runs ~71% invested, so the fair null is
-a portfolio held at a constant 71%, not buy & hold.
+**Matched-exposure control** — the overlay runs ~74% invested, so the fair null is
+a portfolio held at a constant 74%, not buy & hold. Figures below are the adopted
+configuration (2% band, weekly, 5% drift tolerance), reproducible with
+`python validate_oos.py`:
 
 | window | design | CAGR | Sharpe | maxDD | MAR |
 |---|---|---|---|---|---|
-| full | buy & hold | 41.10% | 1.15 | −50.0% | 0.82 |
-| | static 72% | 24.85% | 1.17 | −33.2% | 0.75 |
+| full | buy & hold | 39.11% | 1.15 | −50.0% | 0.78 |
+| | static 74% | 25.91% | 1.17 | −34.0% | 0.76 |
 | | **overlay** | 29.95% | **1.26** | **−27.7%** | **1.08** |
-| train | buy & hold | 26.32% | 0.83 | −50.0% | 0.53 |
-| | static 62% | 14.89% | 0.82 | −29.1% | 0.51 |
-| | **overlay** | 22.84% | **1.06** | **−25.6%** | **0.89** |
-| test | buy & hold | 56.36% | 1.57 | −30.7% | 1.84 |
-| | static 83% | 39.43% | **1.63** | −24.7% | 1.60 |
-| | **overlay** | 36.35% | 1.56 | **−17.4%** | **2.10** |
+| train | buy & hold | 23.04% | 0.83 | −50.0% | 0.46 |
+| | static 65% | 16.23% | 0.83 | −30.6% | 0.53 |
+| | **overlay** | 22.76% | **1.00** | **−27.7%** | **0.82** |
+| test | buy & hold | 55.30% | 1.57 | −30.7% | 1.80 |
+| | static 83% | 40.06% | **1.67** | −24.7% | 1.63 |
+| | **overlay** | 38.45% | 1.57 | **−18.0%** | **2.13** |
+
+The overlay beats the matched static control on **drawdown and MAR in all three
+windows**. It has no Sharpe advantage in the test half (1.57 vs 1.57 vs 1.67) —
+a known limit, not a regression.
 
 Supporting checks:
 
-- **Block bootstrap, 2,000 resamples per universe** — the overlay produced the
-  shallower drawdown in 98.7% (original 8), 100% (broad 58), 99.2% (sectors 11),
-  98.9% (laggards 8) of resamples.
+- **Block bootstrap** — the overlay produced the shallower drawdown in 98.4%
+  (full), 95.4% (train) and 99.8% (test) of resamples, and in 98.7%–100% across
+  four different universes.
 - **Parameter grid** — 12/12 band × cadence cells beat buy & hold on MAR
   (1.04–1.19 vs 0.82).
 - **Cost sensitivity** — MAR holds at 100 bps/side, 20× the modelled cost.
 - **Cadence** — weekly (Sharpe 1.28) is worth ~96% of daily (1.33) at a third of
   the turnover. This is why there is no intraday scanner.
-
-> The matched-exposure table above was measured at the original 0.1% drift
-> setting. The adopted 5% setting improves it (CAGR 29.95%, Sharpe 1.26) while
-> cutting orders from 1,727 to 124 — see the tax section.
 
 ## Costs, fees and tax
 
@@ -114,10 +116,48 @@ returns a *higher* CAGR (29.95% vs 27.88%) and a *higher* Sharpe (1.26 vs 1.24)
 while realising far less short-term gain. Fewer trades was strictly better on
 every axis.
 
-**Tax makes the overlay's position versus buy-and-hold worse, not better.** The
-drawdown benefit is bought with realised gains that buy-and-hold never incurs.
-In a tax-advantaged account (IRA/Roth/401k) rebalancing is tax-free and this
-entire section is moot — which materially changes where this strategy belongs.
+### After-tax terminal wealth — this account IS taxable
+
+Confirmed 2026-08-01: this runs in a **general taxable brokerage account**, not
+an IRA or Roth. So the numbers below are the ones that actually apply.
+
+Both strategies simulated over 2018-11 → 2026-07 on a $100,000 base, paying tax
+out of the portfolio at each year end and liquidating everything on the final
+bar (32% short-term / 15% long-term):
+
+| strategy | after annual tax | after final liquidation | vs buy & hold |
+|---|---|---|---|
+| overlay, drift 0.1% | $520,866 | $504,846 | −53.5% |
+| overlay, drift 1% | $541,400 | $520,852 | −52.0% |
+| **overlay, drift 5%** | **$610,462** | **$584,121** | **−46.2%** |
+| overlay, regime-only | $603,485 | $578,810 | −46.7% |
+| **buy & hold** | $1,260,282 | **$1,086,233** | — |
+
+**Over this window the overlay ends roughly half of buy-and-hold's after-tax
+wealth.**
+
+**Tax is not the main cause.** Ignoring tax entirely the overlay finishes
+$755,139 against buy-and-hold's $1,260,282 — already 40% behind. Tax widens the
+gap from −40% to −46%. The overlay's problem in a bull market is that it gives
+up return, not that it pays tax; the tax is a secondary 6-point penalty.
+
+**What the overlay bought for that money** — 2022, the only real drawdown in the
+window:
+
+| | 2022 return | max drawdown |
+|---|---|---|
+| overlay | −17.28% | −20.43% |
+| buy & hold | −35.18% | −42.74% |
+
+It preserved **17.9 percentage points** of capital in the one bad year.
+
+**The honest trade, stated plainly:** over 2018–2026 in a taxable account this
+strategy cost roughly half the terminal wealth to turn a −43% drawdown into
+−20%. Whether that is worth it depends entirely on whether the deeper drawdown
+would have caused a real behavioural error — selling at the bottom — because a
+buy-and-hold investor who capitulates in 2022 does far worse than either line
+above. The window contains no 2000- or 2008-style bear, where the overlay's case
+is strongest and this gap would narrow substantially.
 
 ## Capital allocation
 

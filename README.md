@@ -114,7 +114,27 @@ The account is assumed dedicated to this strategy. Positions held outside `SYMBO
 
 This is why `DRIFT_TOLERANCE` defaults to 5%: drift trades were 94% of all orders and bought nothing. At 5% the backtest returns a *higher* CAGR and Sharpe with 93% fewer trades.
 
-**Tax makes this strategy's position versus buy-and-hold worse, not better.** In a tax-advantaged account (IRA/Roth/401k) rebalancing is tax-free and this section is moot — which materially changes where the strategy belongs.
+### After-tax reality — this runs in a taxable account
+
+Both strategies simulated on a $100,000 base, paying tax annually and liquidating at the end:
+
+| strategy | after annual tax | after liquidation | vs buy & hold |
+|---|---|---|---|
+| **overlay (drift 5%)** | $610,462 | **$584,121** | **−46.2%** |
+| buy & hold | $1,260,282 | **$1,086,233** | — |
+
+**Over this window the overlay ends at roughly half of buy-and-hold's after-tax wealth.**
+
+Tax is not the main cause. Ignoring tax entirely the overlay finishes $755,139 against $1,260,282 — already 40% behind. Tax widens −40% to −46%.
+
+What that bought, in 2022 — the window's only real drawdown:
+
+| | 2022 return | max drawdown |
+|---|---|---|
+| overlay | −17.28% | −20.43% |
+| buy & hold | −35.18% | −42.74% |
+
+**The trade, plainly: roughly half the terminal wealth to turn a −43% drawdown into −20%.** Worth it only if the deeper drawdown would have made you sell at the bottom — an investor who capitulates in 2022 does far worse than either line. The window contains no 2000- or 2008-style bear, which is precisely where the overlay's case is strongest.
 
 ---
 
